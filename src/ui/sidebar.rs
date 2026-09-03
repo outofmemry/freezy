@@ -1,10 +1,10 @@
-//! Hunk workspace extension's compact Source Control pane.
+//! The existing Source Control list in a terminal-native window frame.
 
 use ratatui::{
-    layout::{Constraint, Layout, Rect},
-    style::Style,
+    layout::Rect,
+    style::{Modifier, Style},
     text::Line,
-    widgets::{List, ListItem, Paragraph},
+    widgets::{Borders, List, ListItem, Paragraph},
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -13,27 +13,29 @@ use super::{window::SIDEBAR, Window};
 use crate::{
     app::App,
     model::{kind_color, stats_label},
-    theme::{clipped, MUTED, PANEL, PANEL_ALT, SEL_BG, TEXT},
+    theme::{clipped, ACCENT, MUTED, PANEL, SEL_BG, SEL_FG, TEXT},
 };
 
 pub fn render_sidebar(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
-    let area = Window::default().render(frame, area);
-    let sections = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(0),
-        Constraint::Length(1),
-    ])
-    .split(area);
+    let focused = app.zoom.focused == SIDEBAR && !app.searching && !app.show_help;
+    let body = Window::default()
+        .borders(Borders::ALL)
+        .focused(focused)
+        .render(frame, area);
     frame.render_widget(
         Paragraph::new(clipped(
             &format!(" SOURCE CONTROL  {}", app.visible().len()),
-            area.width
-                .saturating_sub(if area.width >= 6 { 6 } else { 0 }) as usize,
+            body.width
+                .saturating_sub(if area.width >= 8 { 6 } else { 0 }) as usize,
         ))
-        .style(Style::default().fg(MUTED).bg(PANEL_ALT)),
-        sections[0],
+        .style(
+            Style::default()
+                .fg(if focused { ACCENT } else { TEXT })
+                .bg(PANEL)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(body.x, area.y, body.width, 1.min(area.height)),
     );
-    let body = sections[1];
     app.layout.side = body;
     let visible = app.visible();
     let mut items = Vec::with_capacity(visible.len() + 8);
@@ -64,12 +66,17 @@ pub fn render_sidebar(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
             ))
             .style(
                 Style::default()
-                    .fg(if selected {
-                        TEXT
+                    .fg(if selected && focused {
+                        SEL_FG
                     } else {
                         kind_color(file.kind)
                     })
-                    .bg(if selected { SEL_BG } else { PANEL }),
+                    .bg(if selected && focused { SEL_BG } else { PANEL })
+                    .add_modifier(if selected {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    }),
             ),
         );
     }
@@ -102,15 +109,6 @@ pub fn render_sidebar(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
         )
         .style(Style::default().bg(PANEL)),
         body,
-    );
-    frame.render_widget(
-        Paragraph::new(if app.query.is_empty() {
-            " n/p file  [/] change".into()
-        } else {
-            format!(" / {}  · Esc clear", app.query)
-        })
-        .style(Style::default().fg(MUTED).bg(PANEL_ALT)),
-        sections[2],
     );
     Window::controls(frame, &mut app.zoom, SIDEBAR, SIDEBAR, area);
 }

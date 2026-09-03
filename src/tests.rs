@@ -119,7 +119,7 @@ fn shared_window_frames_content_and_clears_only_its_overlay() {
     let buffer = terminal.backend().buffer();
     assert_eq!(buffer[(0, 0)].symbol(), "x");
     assert_eq!(buffer[(0, 0)].bg, theme::PANEL);
-    assert_eq!(buffer[(2, 2)].symbol(), "┌");
+    assert_eq!(buffer[(2, 2)].symbol(), "╭");
     assert_eq!(buffer[(2, 2)].fg, theme::BORDER);
     assert_eq!(buffer[(3, 4)].symbol(), "c");
     assert_eq!(buffer[(3, 5)].symbol(), " ");
@@ -129,6 +129,9 @@ fn shared_window_frames_content_and_clears_only_its_overlay() {
 
 #[test]
 fn hunk_layout_controls_and_rendered_navigation() {
+    use ratatui::style::{Color, Modifier};
+    use ui::window::{REVIEW, SIDEBAR};
+
     let mut app = fixture();
     let buffer = draw(&mut app, 160, 46);
     let text = screen(&buffer);
@@ -137,14 +140,66 @@ fn hunk_layout_controls_and_rendered_navigation() {
     assert!(text.contains("SOURCE CONTROL  3"));
     assert!(!text.contains("ORIGINAL"));
     assert!(!text.contains("diff --git"));
-    assert_eq!(app.layout.side.x, 1);
-    assert_eq!(app.layout.side.width, 36);
+    assert_eq!(app.layout.side.x, 2);
+    assert_eq!(app.layout.side.width, 34);
     assert_eq!(app.layout.diff.x, 38);
     assert_eq!(app.layout.workspace_tabs[0].y, 0);
     assert_eq!(app.layout.workspace_tabs[0].height, 2);
-    assert_eq!(buffer[(1, 4)].bg, theme::SEL_BG);
+    for position in [(0, 0), (2, 20), (100, 30)] {
+        assert_eq!(buffer[position].bg, Color::Rgb(0, 0, 0));
+    }
+    assert_eq!(buffer[(2, 4)].bg, theme::BG);
+    assert_eq!(buffer[(4, 4)].symbol(), "M");
+    assert_eq!(buffer[(4, 4)].fg, theme::YELLOW);
+    assert!(buffer[(2, 4)].modifier.contains(Modifier::BOLD));
     assert_eq!(buffer[(1, 2)].bg, theme::PANEL_ALT);
-    assert_eq!(buffer[(37, 3)].fg, theme::BORDER);
+    for (x, y, symbol, focused) in [
+        (1, 2, "╭", false),
+        (36, 2, "╮", false),
+        (1, 45, "╰", false),
+        (36, 45, "╯", false),
+        (37, 2, "╭", true),
+        (158, 2, "╮", true),
+        (37, 45, "╰", true),
+        (158, 45, "╯", true),
+    ] {
+        let cell = &buffer[(x, y)];
+        assert_eq!(cell.symbol(), symbol);
+        assert_eq!(
+            cell.fg,
+            if focused {
+                theme::ACCENT
+            } else {
+                theme::BORDER
+            }
+        );
+        assert_eq!(cell.modifier.contains(Modifier::BOLD), focused);
+    }
+    for x in app.layout.side.x..app.layout.side.right() {
+        assert_eq!(buffer[(x, 45)].symbol(), "─");
+    }
+    press(&mut app, KeyCode::F(6));
+    assert_eq!(app.zoom.focused, SIDEBAR);
+    let focused = draw(&mut app, 160, 46);
+    assert_eq!(focused[(1, 2)].fg, theme::ACCENT);
+    assert_eq!(focused[(37, 2)].fg, theme::BORDER);
+    assert_eq!(focused[(2, 4)].bg, theme::SEL_BG);
+    assert_eq!(focused[(2, 4)].fg, theme::SEL_FG);
+    press(&mut app, KeyCode::F(6));
+    assert_eq!(app.zoom.focused, REVIEW);
+    assert_eq!(draw(&mut app, 160, 46), buffer);
+    for (kind, color) in [
+        ('A', theme::GREEN),
+        ('D', theme::RED),
+        ('U', theme::RED),
+        ('M', theme::YELLOW),
+    ] {
+        app.files[1].kind = kind;
+        let status = draw(&mut app, 160, 46);
+        assert_eq!(status[(4, 5)].symbol(), kind.to_string());
+        assert_eq!(status[(4, 5)].fg, color);
+        assert_eq!(status[(4, 5)].bg, Color::Rgb(0, 0, 0));
+    }
     assert_eq!(buffer[(120, 5)].bg, theme::PANEL_ALT);
     assert_eq!(app.sidebar_hit(0), Some(0));
     assert_eq!(app.sidebar_hit(1), Some(0));
@@ -303,7 +358,390 @@ fn workspace_tabs_switch_without_changing_the_files_review() {
 }
 
 #[test]
-fn window_zoom_follows_pointer_and_restores_layout_step_by_step() {
+fn control_hjkl_focuses_windows_without_running_plain_key_actions() {
+    use ratatui::layout::Rect;
+    use ui::window::{WindowId, WindowRegion, REVIEW, SIDEBAR};
+
+    let control = |app: &mut App, key| {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        assert!(!handle_key(
+            event::KeyEvent::new(KeyCode::Char(key), KeyModifiers::CONTROL),
+            app,
+            &tx,
+            Path::new("."),
+        ));
+    };
+    let state = |app: &App| {
+        (
+            app.cursor_row,
+            app.diff_scroll,
+            app.line_numbers,
+            app.selected,
+            app.scroll_x,
+            app.wrap_lines,
+        )
+    };
+    let mut app = fixture();
+    draw(&mut app, 160, 30);
+    let saved = state(&app);
+    for (key, focused) in [
+        ('h', SIDEBAR),
+        ('j', SIDEBAR),
+        ('k', SIDEBAR),
+        ('h', SIDEBAR),
+        ('l', REVIEW),
+        ('l', REVIEW),
+        ('j', REVIEW),
+        ('k', REVIEW),
+    ] {
+        control(&mut app, key);
+        assert_eq!(app.zoom.focused, focused);
+        assert_eq!(state(&app), saved);
+        let buffer = draw(&mut app, 160, 30);
+        for (id, x) in [(SIDEBAR, 1), (REVIEW, 37)] {
+            assert_eq!(
+                buffer[(x, 2)].fg,
+                if id == focused {
+                    theme::ACCENT
+                } else {
+                    theme::BORDER
+                }
+            );
+        }
+    }
+    press(&mut app, KeyCode::Char('L'));
+    assert_ne!(app.line_numbers, saved.2);
+    press(&mut app, KeyCode::Char('L'));
+    press(&mut app, KeyCode::Char('j'));
+    assert!(app.cursor_row > saved.0);
+    press(&mut app, KeyCode::Char('k'));
+    assert_eq!(state(&app), saved);
+
+    for (focused, hidden) in [(SIDEBAR, REVIEW), (REVIEW, SIDEBAR)] {
+        app.zoom.focused = focused;
+        press(&mut app, KeyCode::Char('+'));
+        // Even before the next frame, hidden windows in stale regions are ignored.
+        for key in ['h', 'j', 'k', 'l'] {
+            control(&mut app, key);
+            assert_eq!(app.zoom.focused, focused);
+            assert!(app.zoom.is_hidden(hidden));
+            assert_eq!(app.zoom.level(), 1);
+            draw(&mut app, 160, 30);
+            assert_eq!(app.zoom.regions.len(), 1);
+        }
+        press(&mut app, KeyCode::Char('-'));
+        draw(&mut app, 160, 30);
+    }
+
+    for open in ['/', '?'] {
+        press(&mut app, KeyCode::Char(open));
+        let focused = app.zoom.focused;
+        let query = app.query.clone();
+        for key in ['h', 'j', 'k', 'l'] {
+            control(&mut app, key);
+            assert_eq!(app.zoom.focused, focused);
+            assert_eq!(app.query, query);
+            assert!(app.searching || app.show_help);
+        }
+        press(&mut app, KeyCode::Esc);
+    }
+    for workspace in &Workspace::ALL[1..] {
+        app.open_workspace(*workspace);
+        let buffer = draw(&mut app, 160, 30);
+        let saved = state(&app);
+        let focused = app.zoom.focused;
+        for key in ['h', 'j', 'k', 'l'] {
+            control(&mut app, key);
+            assert_eq!(app.workspace, *workspace);
+            assert_eq!(app.zoom.focused, focused);
+            assert_eq!(state(&app), saved);
+            assert_eq!(draw(&mut app, 160, 30), buffer);
+        }
+    }
+
+    // A 2×2 window layout exercises vertical neighbors without adding UI components.
+    app.open_workspace(Workspace::Files);
+    let ids = [WindowId("a"), WindowId("b"), WindowId("c"), WindowId("d")];
+    app.zoom.regions = ids
+        .into_iter()
+        .enumerate()
+        .map(|(index, id)| WindowRegion {
+            id,
+            group: REVIEW,
+            area: Rect::new(index as u16 % 2 * 20, index as u16 / 2 * 10, 20, 10),
+            restore: Rect::default(),
+            maximize: Rect::default(),
+        })
+        .collect();
+    app.zoom.focused = ids[0];
+    for (key, index) in [('l', 1), ('j', 3), ('h', 2), ('k', 0), ('h', 0), ('k', 0)] {
+        control(&mut app, key);
+        assert_eq!(app.zoom.focused, ids[index]);
+    }
+    press(&mut app, KeyCode::Char('+'));
+    assert!(app.zoom.is_hidden(ids[1]));
+    for key in ['l', 'j', 'h', 'k'] {
+        control(&mut app, key);
+        assert_ne!(app.zoom.focused, ids[1]);
+        assert!(app.zoom.is_hidden(ids[1]));
+        assert_eq!(app.zoom.level(), 1);
+    }
+}
+
+#[tokio::test]
+async fn hjkl_navigation_stays_in_the_active_window() {
+    use ui::window::{REVIEW, SIDEBAR};
+
+    let view = |app: &App| {
+        (
+            app.cursor_row,
+            app.scroll_x,
+            app.wrap_lines,
+            app.line_numbers,
+            app.diff_scroll,
+        )
+    };
+    let mut app = fixture();
+    draw(&mut app, 160, 30);
+    for focused in [SIDEBAR, REVIEW] {
+        app.zoom.focused = focused;
+        let saved = (app.selected, app.gen_diff, view(&app));
+        for key in ['n', 'p', '.', ','] {
+            press(&mut app, KeyCode::Char(key));
+            assert_eq!((app.selected, app.gen_diff, view(&app)), saved);
+            assert_eq!(app.zoom.focused, focused);
+        }
+    }
+    app.zoom.focused = SIDEBAR;
+    app.scroll_x = 12;
+    let saved = view(&app);
+    for key in [
+        KeyCode::Char('h'),
+        KeyCode::Char('l'),
+        KeyCode::Left,
+        KeyCode::Right,
+        KeyCode::Char('L'),
+    ] {
+        press(&mut app, key);
+        assert_eq!(view(&app), saved);
+        assert_eq!(app.zoom.focused, SIDEBAR);
+    }
+    for (key, selected) in [
+        (KeyCode::Char('j'), 1),
+        (KeyCode::Char('k'), 0),
+        (KeyCode::Down, 1),
+        (KeyCode::Up, 0),
+    ] {
+        let generation = app.gen_diff;
+        press(&mut app, key);
+        assert_eq!(app.selected, selected);
+        assert_eq!(app.diff_title, app.files[selected].path);
+        assert!(app.loading_diff);
+        assert_eq!(app.gen_diff, generation + 1);
+        assert_eq!(app.cursor_row, saved.0);
+        assert_eq!(app.zoom.focused, SIDEBAR);
+    }
+
+    app = fixture();
+    draw(&mut app, 160, 30);
+    let cursor = app.cursor_row;
+    for (down, up) in [
+        (KeyCode::Char('j'), KeyCode::Char('k')),
+        (KeyCode::Down, KeyCode::Up),
+    ] {
+        press(&mut app, down);
+        assert!(app.cursor_row > cursor);
+        press(&mut app, up);
+        assert_eq!(app.cursor_row, cursor);
+        assert_eq!(app.selected, 0);
+        assert_eq!(app.gen_diff, 0);
+        assert_eq!(app.zoom.focused, REVIEW);
+    }
+    for (key, offset) in [
+        (KeyCode::Char('l'), 4),
+        (KeyCode::Right, 8),
+        (KeyCode::Char('h'), 4),
+        (KeyCode::Left, 0),
+    ] {
+        press(&mut app, key);
+        assert_eq!(app.scroll_x, offset);
+        assert!(!app.wrap_lines);
+        assert!(app.line_numbers);
+        assert_eq!(app.selected, 0);
+    }
+    press(&mut app, KeyCode::Char('L'));
+    assert!(!app.line_numbers);
+
+    for (focused, hidden) in [(SIDEBAR, REVIEW), (REVIEW, SIDEBAR)] {
+        app = fixture();
+        draw(&mut app, 160, 30);
+        app.zoom.focused = focused;
+        press(&mut app, KeyCode::Char('+'));
+        for key in ['h', 'j', 'k', 'l'] {
+            press(&mut app, KeyCode::Char(key));
+            assert_eq!(app.zoom.focused, focused);
+            assert!(app.zoom.is_hidden(hidden));
+            assert_eq!(app.zoom.level(), 1);
+        }
+    }
+
+    app = fixture();
+    draw(&mut app, 160, 30);
+    app.zoom.focused = SIDEBAR;
+    let saved = view(&app);
+    press(&mut app, KeyCode::Char('?'));
+    press(&mut app, KeyCode::Char('j'));
+    assert_eq!(app.help_scroll, 1);
+    press(&mut app, KeyCode::Char('k'));
+    assert_eq!(app.help_scroll, 0);
+    press(&mut app, KeyCode::Char('h'));
+    press(&mut app, KeyCode::Char('l'));
+    assert_eq!(view(&app), saved);
+    assert_eq!(app.selected, 0);
+    assert_eq!(app.zoom.focused, SIDEBAR);
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Char('/'));
+    for key in "hjklLnp.,".chars() {
+        press(&mut app, KeyCode::Char(key));
+    }
+    assert_eq!(app.query, "hjklLnp.,");
+    assert_eq!(view(&app), saved);
+    assert_eq!(app.zoom.focused, SIDEBAR);
+}
+
+#[tokio::test]
+async fn navigation_clamps_at_file_code_and_hunk_boundaries() {
+    use ratatui::layout::Rect;
+    use ui::window::SIDEBAR;
+
+    let wheel = |app: &mut App, kind, area: Rect| {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        assert!(!handle_input(
+            Event::Mouse(event::MouseEvent {
+                kind,
+                column: area.x,
+                row: area.y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            app,
+            &tx,
+            Path::new("."),
+        ));
+    };
+    let preview = |app: &App| {
+        (
+            app.selected,
+            app.gen_diff,
+            app.hunk_idx,
+            app.cursor_row,
+            app.diff_scroll,
+            app.scroll_x,
+            app.anim_scroll,
+            app.display.lines.len(),
+        )
+    };
+    for count in [0, 1, 3] {
+        let mut app = fixture();
+        app.set_files(0, app.files[..count].to_vec());
+        draw(&mut app, 160, 20);
+        app.zoom.focused = SIDEBAR;
+        for (selected, key, arrow, scroll, delta) in [
+            (0, 'k', KeyCode::Up, MouseEventKind::ScrollUp, isize::MIN),
+            (
+                count.saturating_sub(1),
+                'j',
+                KeyCode::Down,
+                MouseEventKind::ScrollDown,
+                isize::MAX,
+            ),
+        ] {
+            app.selected = selected;
+            app.hunk_idx = 1;
+            app.diff_scroll = 7;
+            app.scroll_x = 8;
+            app.anim_scroll = 6.5;
+            let saved = preview(&app);
+            let side = app.layout.side;
+            for _ in 0..2 {
+                press(&mut app, KeyCode::Char(key));
+                press(&mut app, arrow);
+                wheel(&mut app, scroll, side);
+                assert!(!app.move_file(delta));
+                assert!(!app.move_file(0));
+                assert_eq!(preview(&app), saved);
+                assert!(!app.loading_diff);
+            }
+        }
+    }
+
+    let mut app = fixture();
+    assert!(app.move_file(isize::MAX));
+    assert_eq!(app.selected, 2);
+    assert!(app.move_file(isize::MIN));
+    assert_eq!(app.selected, 0);
+    draw(&mut app, 160, 20);
+    let side = app.layout.side;
+    for (scroll, selected) in [
+        (MouseEventKind::ScrollDown, 2),
+        (MouseEventKind::ScrollUp, 0),
+    ] {
+        let generation = app.gen_diff;
+        wheel(&mut app, scroll, side);
+        assert_eq!(app.selected, selected);
+        assert_eq!(app.gen_diff, generation + 1);
+        assert_eq!(app.diff_title, app.files[selected].path);
+    }
+
+    app = fixture();
+    draw(&mut app, 160, 8);
+    let max_scroll = app.display.lines.len() - app.layout.diff.height as usize;
+    assert!(max_scroll > 0);
+    for (jump, key, arrow, scroll, expected_scroll, cursor) in [
+        (
+            KeyCode::End,
+            'j',
+            KeyCode::Down,
+            MouseEventKind::ScrollDown,
+            max_scroll,
+            *app.display.code_rows.last().unwrap(),
+        ),
+        (
+            KeyCode::Home,
+            'k',
+            KeyCode::Up,
+            MouseEventKind::ScrollUp,
+            0,
+            app.display.code_rows[0],
+        ),
+    ] {
+        press(&mut app, jump);
+        for _ in 0..3 {
+            press(&mut app, KeyCode::Char(key));
+            press(&mut app, arrow);
+            let area = app.layout.diff;
+            wheel(&mut app, scroll, area);
+            draw(&mut app, 160, 8);
+            assert_eq!(app.cursor_row, cursor);
+            assert_eq!(app.diff_scroll, expected_scroll);
+            assert_eq!(app.selected, 0);
+        }
+    }
+    for (delta, index, key) in [(isize::MAX, 1, ']'), (isize::MIN, 0, '[')] {
+        app.move_hunk(delta);
+        assert_eq!(app.hunk_idx, index);
+        app.diff_scroll = app.hunk_scroll_target() + 1;
+        let saved = (app.diff_scroll, app.cursor_row);
+        app.move_hunk(delta);
+        press(&mut app, KeyCode::Char(key));
+        assert_eq!(app.hunk_idx, index);
+        assert_eq!((app.diff_scroll, app.cursor_row), saved);
+        app.move_hunk(0); // The ruler must still explicitly reposition the current hunk.
+        assert_eq!(app.diff_scroll, app.hunk_scroll_target());
+    }
+}
+
+#[test]
+fn window_zoom_follows_clicks_and_restores_layout_step_by_step() {
     use ui::window::{WindowId, REVIEW, SIDEBAR};
 
     let mouse = |app: &mut App, kind, x, y| {
@@ -347,13 +785,31 @@ fn window_zoom_follows_pointer_and_restores_layout_step_by_step() {
         assert_eq!(original.len(), 2);
         assert_eq!(original[0].0, SIDEBAR);
         assert_eq!(original[1].0, REVIEW);
+        for target in [SIDEBAR, REVIEW] {
+            let pane = region(&app, target);
+            let x = if target == SIDEBAR {
+                pane.area.x // Click the frame, not a file row that would start a Git load.
+            } else {
+                pane.area.x + half * pane.area.width / 2 + 2
+            };
+            let y = pane.area.y + 3;
+            let focused = app.zoom.focused;
+            assert_ne!(focused, target);
+            for kind in [
+                MouseEventKind::Moved,
+                MouseEventKind::Drag(MouseButton::Left),
+                MouseEventKind::Up(MouseButton::Left),
+                MouseEventKind::ScrollDown,
+                MouseEventKind::ScrollUp,
+                MouseEventKind::Down(MouseButton::Right),
+            ] {
+                mouse(&mut app, kind, x, y);
+                assert_eq!(app.zoom.focused, focused);
+            }
+            mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x, y);
+            assert_eq!(app.zoom.focused, target);
+        }
         let pane = region(&app, REVIEW);
-        mouse(
-            &mut app,
-            MouseEventKind::Moved,
-            pane.area.x + half * pane.area.width / 2 + 2,
-            pane.area.y + 3,
-        );
         assert_eq!(app.zoom.focused, REVIEW);
         app.cursor_row = *app.display.code_rows.last().unwrap();
         let source = app.display.source_at(app.cursor_row);
@@ -406,6 +862,13 @@ fn window_zoom_follows_pointer_and_restores_layout_step_by_step() {
         app.zoom.focused = SIDEBAR;
         let ruler = app.layout.ruler;
         mouse(&mut app, MouseEventKind::Moved, ruler.x, ruler.y + 2);
+        assert_eq!(app.zoom.focused, SIDEBAR);
+        mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            ruler.x,
+            ruler.y + 2,
+        );
         assert_eq!(app.zoom.focused, REVIEW);
     }
 
@@ -429,7 +892,7 @@ fn window_zoom_follows_pointer_and_restores_layout_step_by_step() {
     let sidebar_only = screen(&draw(&mut app, 160, 30));
     assert!(app.zoom.is_hidden(REVIEW));
     assert_eq!(app.layout.diff.width, 0);
-    assert_eq!(app.layout.side.width, 158);
+    assert_eq!(app.layout.side.width, 156);
     assert_eq!(app.zoom.regions.len(), 1);
     assert_eq!(app.zoom.regions[0].id, SIDEBAR);
     press(&mut app, KeyCode::Char('+'));
@@ -590,7 +1053,7 @@ fn empty_split_cells_stay_clean_including_wrapped_and_selected_rows() {
                 for x in [area.x + 8, middle + 8] {
                     let y = area.y + rows[0] as u16;
                     assert_eq!(baseline[(x, y)].bg, theme::BG);
-                    assert_ne!(selected[(x, y)].bg, theme::BG);
+                    assert_eq!(selected[(x, y)].bg, theme::SEL_BG);
                 }
             }
         }
@@ -625,10 +1088,8 @@ fn tiny_windows_empty_loading_and_overlays_never_panic() {
 
 #[test]
 fn tsx_syntax_colors_survive_split_stack_and_change_backgrounds() {
-    use ratatui::style::Color;
-
-    let purple = Color::Rgb(203, 166, 247);
-    let comment = Color::Rgb(108, 112, 134);
+    let purple = theme::MAGENTA;
+    let comment = theme::FAINT;
     let mut lines = vec![
         DLine::plain("diff --git a/Widget.tsx b/Widget.tsx".into(), DKind::File),
         DLine::plain("@@ -1,4 +1,4 @@".into(), DKind::Hunk),
@@ -714,7 +1175,7 @@ fn cached_syntax_unicode_gutters_and_stale_loads() {
         .syntax
         .iter()
         .flat_map(|l| &l.spans)
-        .any(|s| s.style.fg == Some(ratatui::style::Color::Rgb(203, 166, 247))));
+        .any(|s| s.style.fg == Some(theme::MAGENTA)));
     let original = app.diff_title.clone();
     app.set_diff(99, "stale".into(), vec![], vec![], vec![]);
     assert_eq!(app.diff_title, original);

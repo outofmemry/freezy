@@ -12,7 +12,7 @@ use super::Window;
 
 use crate::{
     app::{App, Workspace},
-    theme::{clipped, ACCENT, GREEN, MUTED, PANEL, PANEL_ALT, SEL_BG, TEXT},
+    theme::{clipped, ACCENT, BLUE, CYAN, GREEN, MUTED, PANEL, PANEL_ALT, SEL_BG, SEL_FG, TEXT},
 };
 
 pub fn render_workspace_tabs(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
@@ -44,7 +44,7 @@ pub fn render_workspace_tabs(frame: &mut ratatui::Frame, app: &mut App, area: Re
             let y = area.bottom().saturating_sub(1);
             for x in rect.x..rect.right() {
                 frame.buffer_mut()[(x, y)]
-                    .set_symbol("━")
+                    .set_symbol("─")
                     .set_fg(ACCENT)
                     .set_bg(PANEL);
             }
@@ -61,13 +61,20 @@ pub fn render_ruler(frame: &mut ratatui::Frame, app: &App, area: Rect) {
     {
         if let Some(hunk) = hunk {
             Window::default()
-                .background(if hunk == app.hunk_idx { ACCENT } else { GREEN })
+                .background(if hunk == app.hunk_idx { CYAN } else { GREEN })
                 .render(frame, Rect::new(area.x, area.y + y as u16, area.width, 1));
         }
     }
 }
 
-fn modal(frame: &mut ratatui::Frame, area: Rect, width: u16, height: u16, title: &str) -> Rect {
+fn modal(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    width: u16,
+    height: u16,
+    title: &str,
+    border: ratatui::style::Color,
+) -> Rect {
     let width = width.min(area.width.saturating_sub(2));
     let height = height.min(area.height.saturating_sub(2));
     let rect = Rect::new(
@@ -78,6 +85,7 @@ fn modal(frame: &mut ratatui::Frame, area: Rect, width: u16, height: u16, title:
     );
     let inside = Window::default()
         .borders(Borders::ALL)
+        .border_style(Style::default().fg(border).add_modifier(Modifier::BOLD))
         .padding(Padding::vertical(1))
         .overlay()
         .render(frame, rect);
@@ -87,7 +95,7 @@ fn modal(frame: &mut ratatui::Frame, area: Rect, width: u16, height: u16, title:
             " {}",
             clipped(title, inside.width.saturating_sub(close_width + 1) as usize)
         ))
-        .style(Style::default().fg(TEXT)),
+        .style(Style::default().fg(border).add_modifier(Modifier::BOLD)),
         Rect::new(
             inside.x,
             inside.y,
@@ -98,7 +106,7 @@ fn modal(frame: &mut ratatui::Frame, area: Rect, width: u16, height: u16, title:
     frame.render_widget(
         Paragraph::new("[Esc] ")
             .alignment(Alignment::Right)
-            .style(Style::default().fg(MUTED)),
+            .style(Style::default().fg(BLUE)),
         Rect::new(
             inside.right().saturating_sub(close_width),
             inside.y,
@@ -115,12 +123,12 @@ fn modal(frame: &mut ratatui::Frame, area: Rect, width: u16, height: u16, title:
 }
 
 pub fn render_search_popup(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
-    let body = modal(frame, area, 74, 20, "Open changed file");
+    let body = modal(frame, area, 74, 20, "Open changed file", CYAN);
     if body.height == 0 {
         return;
     }
     frame.render_widget(
-        Paragraph::new(format!(" / {}", app.query)).style(Style::default().fg(TEXT).bg(PANEL_ALT)),
+        Paragraph::new(format!(" / {}", app.query)).style(Style::default().fg(CYAN).bg(PANEL_ALT)),
         Rect::new(body.x, body.y, body.width, 1),
     );
     let results = Rect::new(
@@ -148,7 +156,7 @@ pub fn render_search_popup(frame: &mut ratatui::Frame, app: &mut App, area: Rect
                     clipped(&app.files[i].path, results.width.saturating_sub(3) as usize)
                 ),
                 Style::default()
-                    .fg(if selected { TEXT } else { MUTED })
+                    .fg(if selected { SEL_FG } else { TEXT })
                     .bg(if selected { SEL_BG } else { PANEL }),
             )
         })
@@ -169,7 +177,7 @@ pub fn render_search_popup(frame: &mut ratatui::Frame, app: &mut App, area: Rect
             " {} files  ·  ↑/↓ select  ·  Enter open",
             visible.len()
         ))
-        .style(Style::default().fg(MUTED)),
+        .style(Style::default().fg(BLUE)),
         Rect::new(body.x, body.bottom().saturating_sub(1), body.width, 1),
     );
     let cursor_x = body.x + 3 + app.query.width() as u16;
@@ -179,17 +187,16 @@ pub fn render_search_popup(frame: &mut ratatui::Frame, app: &mut App, area: Rect
 }
 
 pub fn render_help_overlay(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
-    let body = modal(frame, area, 74, 37, "Controls help");
+    let body = modal(frame, area, 74, 37, "Controls help", ACCENT);
     let rows = [
         ("Navigation", ""),
         ("1 / 2 / 3 / 4", "Files / Commits / Branch / Stash"),
-        ("Up / Down · j / k", "move line-by-line"),
+        ("Up / Down · j / k", "move active file / code selection"),
         ("PageDown / Space / f", "page down"),
         ("PageUp / b", "page up"),
         ("d / u", "half page down / up"),
         ("[ / ]", "previous / next hunk"),
-        ("p / n · , / .", "previous / next file"),
-        ("Left / Right", "scroll code sideways"),
+        ("Left / Right · h / l", "scroll active viewer sideways"),
         ("g / Home", "jump to start"),
         ("G / End", "jump to end"),
         ("", ""),
@@ -200,11 +207,12 @@ pub fn render_help_overlay(frame: &mut ratatui::Frame, app: &mut App, area: Rect
         ("", ""),
         ("View", ""),
         ("+ / -", "maximize / restore one level"),
-        ("Hover / click / F6", "choose window to maximize"),
+        ("Click / F6", "choose window to maximize"),
+        ("Ctrl-h/j/k/l", "focus window left/down/up/right"),
         ("< / > / 0", "stack / split / auto"),
         ("s", "toggle sidebar"),
         ("z / click gap", "expand / collapse unchanged lines"),
-        ("l / w / m", "lines / wrap / metadata"),
+        ("Shift-L / w / m", "lines / wrap / metadata"),
         ("v", "toggle split / stack"),
         ("", ""),
         ("Review", ""),
@@ -219,7 +227,7 @@ pub fn render_help_overlay(frame: &mut ratatui::Frame, app: &mut App, area: Rect
                 Span::styled(
                     format!(" {key:<25}"),
                     Style::default()
-                        .fg(if desc.is_empty() { TEXT } else { MUTED })
+                        .fg(if desc.is_empty() { ACCENT } else { BLUE })
                         .add_modifier(if desc.is_empty() {
                             Modifier::BOLD
                         } else {

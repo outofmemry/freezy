@@ -1,8 +1,8 @@
-//! Hunk-style review rows. Wrapping, syntax, and inline changes are cached.
+//! Review rows with terminal-native chrome. Wrapping, syntax, and inline changes are cached.
 
 use ratatui::{
-    layout::{Alignment, Rect},
-    style::{Color, Style},
+    layout::{Alignment, Constraint, Layout, Rect},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Borders, Paragraph},
 };
@@ -14,8 +14,8 @@ use crate::{
     app::App,
     model::{emph_ranges, Cell, DKind, SideRow},
     theme::{
-        clipped, spinner, ADD_BG, ADD_EMPH, BG, BORDER, DEL_BG, DEL_EMPH, FAINT, GREEN, MUTED,
-        PANEL, PANEL_ALT, RED, TEXT,
+        clipped, spinner, ACCENT, ADD_BG, ADD_EMPH, BG, BLUE, CYAN, DEL_BG, DEL_EMPH, FAINT, GREEN,
+        MUTED, PANEL, PANEL_ALT, RED, SEL_BG, SEL_FG, TEXT,
     },
 };
 
@@ -231,7 +231,7 @@ fn add_hunk(view: &mut DiffView, header: &str, width: usize, visible: bool) {
         let padding = " ".repeat(width.saturating_sub(header.width() + 2));
         view.lines.push(Line::styled(
             format!("{header}{padding}"),
-            Style::default().fg(MUTED).bg(PANEL_ALT),
+            Style::default().fg(CYAN).bg(PANEL_ALT),
         ));
     }
 }
@@ -258,7 +258,7 @@ fn add_gap(view: &mut DiffView, id: usize, text: &str, width: usize, expanded: b
     let padding = " ".repeat(width.saturating_sub(label.width() + 2));
     view.lines.push(Line::styled(
         format!("{label}{padding}"),
-        Style::default().fg(MUTED).bg(PANEL_ALT),
+        Style::default().fg(BLUE).bg(PANEL_ALT),
     ));
 }
 
@@ -312,7 +312,10 @@ fn prepare(app: &mut App, area: Rect) {
     let gap = " ".repeat(width.saturating_sub(name.width() + suffix.width() + stats.width() + 1));
     view.lines.push(
         Line::from(vec![
-            Span::styled(format!(" {name}"), Style::default().fg(TEXT)),
+            Span::styled(
+                format!(" {name}"),
+                Style::default().fg(CYAN).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(suffix, Style::default().fg(MUTED)),
             Span::raw(gap),
             Span::styled(format!("+{adds}"), Style::default().fg(GREEN)),
@@ -499,20 +502,19 @@ fn prepare(app: &mut App, area: Rect) {
 }
 
 pub fn render_diff(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
+    let focused = app.zoom.focused == REVIEW && !app.searching && !app.show_help;
     let window = Window::default()
-        .borders(Borders::LEFT | Borders::RIGHT)
+        .borders(Borders::ALL)
+        .focused(focused)
         .render(frame, area);
-    // The controls have their own fixed header, outside the scrolling content.
-    frame.render_widget(
-        Paragraph::new("─".repeat(window.width as usize)).style(Style::default().fg(BORDER)),
-        Rect::new(window.x, window.y, window.width, 1.min(window.height)),
-    );
-    let area = Rect::new(
-        window.x,
-        window.y + 1.min(window.height),
-        window.width,
-        window.height.saturating_sub(1),
-    );
+    Window::controls(frame, &mut app.zoom, REVIEW, REVIEW, area);
+    let columns = Layout::horizontal([
+        Constraint::Min(0),
+        Constraint::Length(if area.width >= 20 { 2 } else { 0 }),
+    ])
+    .split(window);
+    app.layout.ruler = columns[1];
+    let area = columns[0];
     app.layout.diff = area;
     if app.loading_diff
         || app.scanning
@@ -540,7 +542,6 @@ pub fn render_diff(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
             .style(Style::default().fg(MUTED).bg(PANEL)),
             area,
         );
-        Window::controls(frame, &mut app.zoom, REVIEW, REVIEW, window);
         return;
     }
     prepare(app, area);
@@ -576,21 +577,28 @@ pub fn render_diff(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
             for column in columns {
                 let x = area.x + column as u16;
                 let cell = &mut frame.buffer_mut()[(x, row.y)];
-                if let Color::Rgb(r, g, b) = cell.bg {
-                    // Hunk's current-line tint is a 20% blend toward its foreground.
-                    cell.set_bg(Color::Rgb(
-                        (r as f32 * 0.8 + 205.0 * 0.2).round() as u8,
-                        (g as f32 * 0.8 + 214.0 * 0.2).round() as u8,
-                        (b as f32 * 0.8 + 244.0 * 0.2).round() as u8,
-                    ));
+                if focused {
+                    match cell.bg {
+                        Color::Rgb(r, g, b) if cell.bg != BG => {
+                            // Lift changed cells without losing red/green or inline emphasis.
+                            cell.set_bg(Color::Rgb(
+                                r.saturating_add(20),
+                                g.saturating_add(20),
+                                b.saturating_add(20),
+                            ));
+                        }
+                        _ => {
+                            cell.set_bg(SEL_BG).set_fg(SEL_FG);
+                        }
+                    }
                 }
+                cell.set_style(Style::default().add_modifier(Modifier::BOLD));
             }
         }
         if area.width > 0 && current.is_some_and(|from| display_row >= from && display_row < end) {
             frame.buffer_mut()[(row.x, row.y)]
                 .set_symbol("▌")
-                .set_fg(MUTED);
+                .set_fg(if focused { ACCENT } else { MUTED });
         }
     }
-    Window::controls(frame, &mut app.zoom, REVIEW, REVIEW, window);
 }

@@ -2,7 +2,7 @@
 
 use crate::{
     model::{DKind, DLine},
-    theme::TEXT,
+    theme::{BLUE, CYAN, FAINT, GREEN, MAGENTA, RED, TEXT, YELLOW},
 };
 use ratatui::{
     style::{Color, Style},
@@ -55,23 +55,23 @@ fn syntax_theme() -> &'static Theme {
     THEME.get_or_init(|| {
         let color = |r, g, b| SyntaxColor { r, g, b, a: 255 };
         let mut theme = Theme::default();
-        theme.settings.foreground = Some(color(205, 214, 244));
+        theme.settings.foreground = Some(color(192, 192, 192));
         for (scope, (r, g, b)) in [
-            ("comment", (108, 112, 134)),
-            ("keyword, storage", (203, 166, 247)),
-            ("string", (166, 227, 161)),
-            ("constant.numeric, constant.language", (250, 179, 135)),
-            ("entity.name.function, support.function", (137, 180, 250)),
+            ("comment", (128, 128, 128)),
+            ("keyword, storage", (128, 0, 128)),
+            ("string", (0, 128, 0)),
+            ("constant.numeric, constant.language", (128, 128, 0)),
+            ("entity.name.function, support.function", (0, 0, 128)),
             (
                 "entity.name.type, entity.name.class, support.type, support.class",
-                (249, 226, 175),
+                (0, 128, 128),
             ),
-            ("variable.parameter", (235, 160, 172)),
-            ("keyword.operator", (137, 220, 235)),
-            ("punctuation", (147, 153, 178)),
-            ("entity.name.tag", (203, 166, 247)),
-            ("entity.other.attribute-name", (249, 226, 175)),
-            ("markup.heading", (137, 180, 250)),
+            ("variable.parameter", (128, 0, 0)),
+            ("keyword.operator", (0, 128, 128)),
+            ("punctuation", (128, 128, 128)),
+            ("entity.name.tag", (128, 0, 128)),
+            ("entity.other.attribute-name", (0, 128, 128)),
+            ("markup.heading", (0, 0, 128)),
         ] {
             theme.scopes.push(ThemeItem {
                 scope: scope.parse().expect("static syntax scope"),
@@ -83,6 +83,21 @@ fn syntax_theme() -> &'static Theme {
         }
         theme
     })
+}
+
+fn terminal_color(color: SyntaxColor) -> Color {
+    // Syntect's scope colors are keys into the same fixed palette used by the UI.
+    match (color.r, color.g, color.b) {
+        (192, 192, 192) => TEXT,
+        (128, 128, 128) => FAINT,
+        (128, 0, 128) => MAGENTA,
+        (0, 128, 0) => GREEN,
+        (128, 128, 0) => YELLOW,
+        (0, 0, 128) => BLUE,
+        (0, 128, 128) => CYAN,
+        (128, 0, 0) => RED,
+        (r, g, b) => Color::Rgb(r, g, b),
+    }
 }
 
 pub fn highlight(lines: &[DLine], filename: &str) -> Vec<Line<'static>> {
@@ -114,10 +129,9 @@ pub fn highlight(lines: &[DLine], filename: &str) -> Vec<Line<'static>> {
                         tokens
                             .into_iter()
                             .map(|(style, text)| {
-                                let color = style.foreground;
                                 Span::styled(
                                     text.to_owned(),
-                                    Style::default().fg(Color::Rgb(color.r, color.g, color.b)),
+                                    Style::default().fg(terminal_color(style.foreground)),
                                 )
                             })
                             .collect::<Vec<_>>()
@@ -196,10 +210,7 @@ mod tests {
         for extension in ["js", "jsx", "mjs", "cjs", "ts", "tsx", "mts", "cts"] {
             let colored = highlight(&source, &format!("app.{extension}"));
             assert_eq!(colored[0].to_string(), "const message = \"hello\";");
-            for (token, foreground) in [
-                ("const", Color::Rgb(203, 166, 247)),
-                ("hello", Color::Rgb(166, 227, 161)),
-            ] {
+            for (token, foreground) in [("const", MAGENTA), ("hello", GREEN)] {
                 assert!(
                     colored[0].spans.iter().any(|span| {
                         span.content.contains(token) && span.style.fg == Some(foreground)

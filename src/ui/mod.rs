@@ -10,6 +10,7 @@ pub use window::Window;
 use window::{REVIEW, SIDEBAR};
 
 use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::widgets::Borders;
 
 use crate::{
     app::{App, Workspace},
@@ -42,38 +43,20 @@ pub fn render(frame: &mut ratatui::Frame, app: &mut App) {
         } else {
             0
         };
-        let columns = Layout::horizontal([
-            Constraint::Length(side_width),
-            Constraint::Min(0),
-            Constraint::Length(if review_visible && area.width >= 20 {
-                2
-            } else {
-                0
-            }),
-        ])
-        .split(workspace);
+        let columns = Layout::horizontal([Constraint::Length(side_width), Constraint::Min(0)])
+            .split(workspace);
         if side_width > 0 {
             sidebar::render_sidebar(frame, app, columns[0]);
         }
         if review_visible {
-            app.layout.ruler = columns[2];
             diff::render_diff(frame, app, columns[1]);
-            chrome::render_ruler(frame, app, columns[2]);
-            if let Some(viewer) = app
-                .zoom
-                .regions
-                .iter_mut()
-                .find(|region| region.id == REVIEW)
-            {
-                // Borders and the overview ruler belong to the same file-viewer window.
-                viewer.area = Rect::new(
-                    columns[1].x,
-                    columns[1].y,
-                    columns[1].width + columns[2].width,
-                    columns[1].height,
-                );
-            }
+            chrome::render_ruler(frame, app, app.layout.ruler);
         }
+    } else {
+        Window::default()
+            .borders(Borders::ALL)
+            .focused(true)
+            .render(frame, workspace);
     }
     app.zoom.ensure_focus();
     if app.searching {

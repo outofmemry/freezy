@@ -2,12 +2,12 @@
 
 use ratatui::{
     layout::{Position, Rect},
-    style::{Color, Style},
-    widgets::{Block, Borders, Clear, Padding},
+    style::{Color, Modifier, Style},
+    widgets::{Block, BorderType, Borders, Clear, Padding},
     Frame,
 };
 
-use crate::theme::{ACCENT, BORDER, MUTED, PANEL};
+use crate::theme::{ACCENT, BORDER, MUTED, PANEL, TEXT};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// Identity of a zoomable window, never of content such as an old/new diff column.
@@ -127,6 +127,50 @@ impl WindowZoom {
         }
     }
 
+    /// Focus the nearest visible window in a direction, without wrapping or restoring it.
+    pub fn focus_direction(&mut self, direction: char) {
+        self.ensure_focus();
+        let Some(from) = self
+            .regions
+            .iter()
+            .find(|region| region.id == self.focused && self.visible(region))
+            .map(|region| region.area)
+        else {
+            return;
+        };
+        let horizontal = matches!(direction, 'h' | 'l');
+        let bounds = |rect: Rect| {
+            if horizontal {
+                (rect.x, rect.right(), rect.y, rect.bottom())
+            } else {
+                (rect.y, rect.bottom(), rect.x, rect.right())
+            }
+        };
+        let (start, end, cross_start, cross_end) = bounds(from);
+        let target = self
+            .regions
+            .iter()
+            .filter(|region| region.id != self.focused && self.visible(region))
+            .filter_map(|region| {
+                let (near, far, cross_near, cross_far) = bounds(region.area);
+                let gap = match direction {
+                    'h' | 'k' if far <= start => start - far,
+                    'j' | 'l' if near >= end => near - end,
+                    _ => return None,
+                };
+                let cross_gap = cross_start
+                    .saturating_sub(cross_far)
+                    .max(cross_near.saturating_sub(cross_end));
+                let alignment = (u32::from(cross_start) + u32::from(cross_end))
+                    .abs_diff(u32::from(cross_near) + u32::from(cross_far));
+                Some(((cross_gap, gap, alignment), region.id))
+            })
+            .min_by_key(|(distance, _)| *distance);
+        if let Some((_, id)) = target {
+            self.focused = id;
+        }
+    }
+
     pub fn control_at(&self, x: u16, y: u16) -> Option<(WindowId, bool)> {
         let position = Position::new(x, y);
         self.regions
@@ -154,8 +198,9 @@ impl Default for Window {
     fn default() -> Self {
         Self {
             block: Block::default()
+                .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(BORDER))
-                .style(Style::default().bg(PANEL)),
+                .style(Style::default().fg(TEXT).bg(PANEL)),
             overlay: false,
         }
     }
@@ -174,10 +219,11 @@ impl Window {
         if area.is_empty() || zoom.is_hidden(id) {
             return;
         }
-        let (restore, maximize) = if area.width >= 6 {
+        // Keep both rounded frame corners intact.
+        let (restore, maximize) = if area.width >= 8 {
             (
-                Rect::new(area.right() - 6, area.y, 3, 1),
-                Rect::new(area.right() - 3, area.y, 3, 1),
+                Rect::new(area.right() - 7, area.y, 3, 1),
+                Rect::new(area.right() - 4, area.y, 3, 1),
             )
         } else {
             (Rect::default(), Rect::default())
@@ -194,7 +240,12 @@ impl Window {
             for (offset, symbol) in ["[", "-", "]", "[", "+", "]"].into_iter().enumerate() {
                 frame.buffer_mut()[(restore.x + offset as u16, area.y)]
                     .set_symbol(symbol)
-                    .set_fg(color);
+                    .set_fg(color)
+                    .set_style(Style::default().add_modifier(if zoom.focused == id {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    }));
             }
         }
     }
@@ -202,6 +253,23 @@ impl Window {
     pub fn borders(mut self, borders: Borders) -> Self {
         self.block = self.block.borders(borders);
         self
+    }
+
+    pub fn border_style(mut self, style: Style) -> Self {
+        self.block = self.block.border_style(style);
+        self
+    }
+
+    pub fn focused(self, focused: bool) -> Self {
+        self.border_style(
+            Style::default()
+                .fg(if focused { ACCENT } else { BORDER })
+                .add_modifier(if focused {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }),
+        )
     }
 
     pub fn background(mut self, color: Color) -> Self {
@@ -302,12 +370,13 @@ mod tests {
             .unwrap();
         assert_eq!(zoom.regions.len(), 2);
         assert_eq!(zoom.control_at(14, 0), Some((REVIEW, false)));
-        assert_eq!(zoom.control_at(19, 0), Some((REVIEW, true)));
+        assert_eq!(zoom.control_at(18, 0), Some((REVIEW, true)));
+        assert_eq!(zoom.control_at(19, 0), None); // Right frame corner is never a button.
         assert_eq!(zoom.control_at(4, 0), None);
         assert_eq!(zoom.control_at(19, 1), None);
         let buffer = terminal.backend().buffer();
         for (offset, symbol) in ["[", "-", "]", "[", "+", "]"].into_iter().enumerate() {
-            let cell = &buffer[(14 + offset as u16, 0)];
+            let cell = &buffer[(13 + offset as u16, 0)];
             assert_eq!(cell.symbol(), symbol);
             assert_eq!(cell.bg, PANEL);
             assert_eq!(cell.fg, ACCENT);

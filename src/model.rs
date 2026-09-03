@@ -1,6 +1,6 @@
 //! Core data model: files, diff lines, side-by-side rows.
 
-use crate::theme::{ACCENT, GREEN, RED};
+use crate::theme::{GREEN, RED, TEXT, YELLOW};
 
 #[derive(Clone, Debug)]
 pub struct FileEntry {
@@ -104,9 +104,9 @@ impl DLine {
 pub fn kind_color(k: char) -> ratatui::style::Color {
     match k {
         'A' => GREEN,
-        'D' => RED,
-        'U' => GREEN,
-        _ => ACCENT,
+        'M' => YELLOW,
+        'D' | 'U' => RED,
+        _ => TEXT,
     }
 }
 

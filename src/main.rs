@@ -24,7 +24,10 @@ use crossterm::event::{
 };
 use crossterm::execute;
 use git::{load_diff_text, scan_all_files};
-use ui::render;
+use ui::{
+    render,
+    window::{REVIEW, SIDEBAR},
+};
 
 fn spawn_files(tx: tokio::sync::mpsc::Sender<Msg>, root: PathBuf, gen: u64) {
     tokio::spawn(async move {
@@ -185,17 +188,18 @@ fn handle_input(
     match event {
         Event::Key(key) => handle_key(key, app, tx, root),
         Event::Mouse(mouse) => {
-            if !app.show_help && !app.searching {
-                if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
-                    if let Some((id, maximize)) = app.zoom.control_at(mouse.column, mouse.row) {
-                        app.zoom.focused = id;
-                        if maximize {
-                            app.zoom.maximize();
-                        } else {
-                            app.zoom.restore();
-                        }
-                        return false;
+            if !app.show_help
+                && !app.searching
+                && mouse.kind == MouseEventKind::Down(MouseButton::Left)
+            {
+                if let Some((id, maximize)) = app.zoom.control_at(mouse.column, mouse.row) {
+                    app.zoom.focused = id;
+                    if maximize {
+                        app.zoom.maximize();
+                    } else {
+                        app.zoom.restore();
                     }
+                    return false;
                 }
                 app.zoom.focus_at(mouse.column, mouse.row);
             }
@@ -279,8 +283,9 @@ fn handle_input(
                         app.scroll_x.saturating_sub(4)
                     };
                 } else if in_rect(&app.layout.side, mouse.column, mouse.row) {
-                    app.move_file(if down { 3 } else { -3 });
-                    load_selected(tx, root, app);
+                    if app.move_file(if down { 3 } else { -3 }) {
+                        load_selected(tx, root, app);
+                    }
                 } else {
                     app.diff_scroll = if down {
                         app.diff_scroll.saturating_add(3)
@@ -341,8 +346,12 @@ fn handle_key(
                     load_selected(tx, root, app);
                 }
             }
-            KeyCode::Up => app.move_file(-1),
-            KeyCode::Down => app.move_file(1),
+            KeyCode::Up => {
+                app.move_file(-1);
+            }
+            KeyCode::Down => {
+                app.move_file(1);
+            }
             KeyCode::Backspace => {
                 app.query.pop();
                 app.refresh_filter();
@@ -367,6 +376,11 @@ fn handle_key(
             app.help_scroll = 0;
         }
         _ if app.workspace != Workspace::Files => return false,
+        KeyCode::Char(direction @ ('h' | 'j' | 'k' | 'l'))
+            if key.modifiers.contains(KeyModifiers::CONTROL) =>
+        {
+            app.zoom.focus_direction(direction);
+        }
         KeyCode::Char('+') => {
             app.zoom.maximize();
         }
@@ -383,16 +397,22 @@ fn handle_key(
                 app.zoom.focused = app.zoom.regions[(index + 1) % app.zoom.regions.len()].id;
             }
         }
-        KeyCode::Char('n' | '.') => {
-            app.move_file(1);
-            load_selected(tx, root, app);
+        KeyCode::Down | KeyCode::Up | KeyCode::Char('j' | 'k') => {
+            let delta = if matches!(key.code, KeyCode::Down | KeyCode::Char('j')) {
+                1
+            } else {
+                -1
+            };
+            match app.zoom.focused {
+                SIDEBAR => {
+                    if app.move_file(delta) {
+                        load_selected(tx, root, app);
+                    }
+                }
+                REVIEW => app.move_cursor(delta),
+                _ => {}
+            }
         }
-        KeyCode::Char('p' | ',') => {
-            app.move_file(-1);
-            load_selected(tx, root, app);
-        }
-        KeyCode::Down | KeyCode::Char('j') => app.move_cursor(1),
-        KeyCode::Up | KeyCode::Char('k') => app.move_cursor(-1),
         KeyCode::Char(']') => app.move_hunk(1),
         KeyCode::Char('[') => app.move_hunk(-1),
         KeyCode::Char('g') | KeyCode::Home => {
@@ -419,7 +439,7 @@ fn handle_key(
             app.zoom.reset();
             app.show_sidebar = !app.show_sidebar;
         }
-        KeyCode::Char('l') => app.line_numbers = !app.line_numbers,
+        KeyCode::Char('L') if app.zoom.focused == REVIEW => app.line_numbers = !app.line_numbers,
         KeyCode::Char('w') => {
             app.wrap_lines = !app.wrap_lines;
             app.scroll_x = 0;
@@ -466,9 +486,9 @@ fn handle_key(
             app.diff_scroll = app.diff_scroll.saturating_sub((page / 2).max(1));
             app.move_cursor(-((page / 2).max(1) as isize));
         }
-        KeyCode::Left | KeyCode::Right => {
+        KeyCode::Left | KeyCode::Right | KeyCode::Char('h' | 'l') if app.zoom.focused == REVIEW => {
             app.wrap_lines = false;
-            app.scroll_x = if key.code == KeyCode::Right {
+            app.scroll_x = if matches!(key.code, KeyCode::Right | KeyCode::Char('l')) {
                 app.scroll_x.saturating_add(4)
             } else {
                 app.scroll_x.saturating_sub(4)

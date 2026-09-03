@@ -1,23 +1,28 @@
-//! Catppuccin Mocha, using the surface colors from the installed Hunk theme.
+//! LazyGit-inspired dark palette, independent of the terminal's ANSI theme.
 
 use ratatui::style::Color;
 use unicode_width::UnicodeWidthChar;
 
-pub const BG: Color = Color::Rgb(30, 30, 46);
-pub const PANEL: Color = Color::Rgb(44, 45, 62);
-pub const PANEL_ALT: Color = Color::Rgb(51, 52, 70);
-pub const BORDER: Color = Color::Rgb(62, 63, 82);
-pub const MUTED: Color = Color::Rgb(177, 178, 185);
-pub const FAINT: Color = Color::Rgb(128, 133, 157);
-pub const TEXT: Color = Color::Rgb(205, 214, 244);
-pub const ACCENT: Color = Color::Rgb(249, 226, 175);
-pub const GREEN: Color = Color::Rgb(166, 227, 161);
-pub const RED: Color = Color::Rgb(243, 139, 168);
-pub const SEL_BG: Color = Color::Rgb(85, 79, 78);
-pub const ADD_BG: Color = Color::Rgb(57, 69, 69);
-pub const DEL_BG: Color = Color::Rgb(73, 52, 70);
-pub const ADD_EMPH: Color = Color::Rgb(68, 85, 78);
-pub const DEL_EMPH: Color = Color::Rgb(90, 61, 80);
+pub const BG: Color = Color::Rgb(0, 0, 0);
+pub const PANEL: Color = BG;
+pub const PANEL_ALT: Color = BG;
+pub const BORDER: Color = Color::Rgb(192, 192, 192);
+pub const MUTED: Color = Color::Rgb(175, 175, 175);
+pub const FAINT: Color = Color::Rgb(128, 128, 128);
+pub const TEXT: Color = Color::Rgb(215, 215, 215);
+pub const ACCENT: Color = GREEN;
+pub const GREEN: Color = Color::Rgb(0, 215, 0);
+pub const RED: Color = Color::Rgb(255, 95, 95);
+pub const YELLOW: Color = Color::Rgb(255, 255, 0);
+pub const BLUE: Color = Color::Rgb(95, 175, 255);
+pub const CYAN: Color = Color::Rgb(0, 215, 255);
+pub const MAGENTA: Color = Color::Rgb(215, 95, 255);
+pub const SEL_BG: Color = Color::Rgb(0, 95, 175);
+pub const SEL_FG: Color = Color::Rgb(255, 255, 255);
+pub const ADD_BG: Color = Color::Rgb(12, 35, 18);
+pub const DEL_BG: Color = Color::Rgb(46, 16, 18);
+pub const ADD_EMPH: Color = Color::Rgb(22, 66, 32);
+pub const DEL_EMPH: Color = Color::Rgb(82, 26, 30);
 
 /// Clip terminal cells, not bytes or characters. Never split a wide character.
 pub fn clipped(text: &str, width: usize) -> String {

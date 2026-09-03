@@ -171,18 +171,22 @@ impl App {
             .cloned()
     }
 
-    /// Instant index flip. Never touches git — caller spawns the async diff load.
-    pub fn move_file(&mut self, delta: isize) {
+    /// Stop at either end; callers only load a diff when the selection changes.
+    pub fn move_file(&mut self, delta: isize) -> bool {
         let n = self.visible().len();
         if n == 0 {
-            return;
+            return false;
         }
-        let next = (self.selected as isize + delta).rem_euclid(n as isize) as usize;
+        let next = self.selected.saturating_add_signed(delta).min(n - 1);
+        if next == self.selected {
+            return false;
+        }
         self.selected = next;
         self.hunk_idx = 0;
         self.diff_scroll = 0;
         self.scroll_x = 0;
         self.anim_scroll = 0.0;
+        true
     }
 
     /// Selected file's row index including repo headers.
@@ -245,8 +249,14 @@ impl App {
         if self.hunks.is_empty() {
             return;
         }
-        let n = self.hunks.len() as isize;
-        self.hunk_idx = (self.hunk_idx as isize + delta).rem_euclid(n) as usize;
+        let next = self
+            .hunk_idx
+            .saturating_add_signed(delta)
+            .min(self.hunks.len() - 1);
+        if next == self.hunk_idx && delta != 0 {
+            return;
+        }
+        self.hunk_idx = next;
         self.diff_scroll = self.hunk_scroll_target();
         self.cursor_row = self
             .display
