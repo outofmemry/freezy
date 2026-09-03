@@ -13,6 +13,28 @@ pub enum Msg {
     Diff(u64, String, Vec<DLine>, Vec<usize>, Vec<Line<'static>>),
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Workspace {
+    #[default]
+    Files,
+    Commits,
+    Branch,
+    Stash,
+}
+
+impl Workspace {
+    pub const ALL: [Self; 4] = [Self::Files, Self::Commits, Self::Branch, Self::Stash];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Files => "Files",
+            Self::Commits => "Commits",
+            Self::Branch => "Branch",
+            Self::Stash => "Stash",
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct LayoutCache {
     pub side: Rect,
@@ -20,12 +42,12 @@ pub struct LayoutCache {
     pub ruler: Rect,
     /// Sidebar window offset (manual windowing) — for click mapping.
     pub side_win: usize,
-    pub menus: Vec<Rect>,
-    pub menu_items: Rect,
+    pub workspace_tabs: Vec<Rect>,
     pub search_results: Rect,
 }
 
 pub struct App {
+    pub workspace: Workspace,
     pub files: Vec<FileEntry>,
     pub query: String,
     /// Cached fuzzy matches (indices into `files`); recomputed only when
@@ -48,22 +70,17 @@ pub struct App {
     pub side_by_side: bool,
     pub auto_layout: bool,
     pub show_sidebar: bool,
-    pub show_menu_bar: bool,
     pub line_numbers: bool,
     pub wrap_lines: bool,
     pub hunk_headers: bool,
-    pub menu: Option<usize>,
-    pub menu_row: usize,
     pub show_help: bool,
     pub help_scroll: u16,
     pub scanning: bool,
-    pub status: String,
     pub gen_files: u64,
     pub gen_diff: u64,
     pub matcher: SkimMatcherV2,
     pub last_refresh: Instant,
     pub frame: u64,
-    pub root_name: String,
     /// Precomputed side-by-side rows + per-hunk row ranges. Rebuilt only
     /// when a diff loads — render just slices it.
     pub side_cache: (Vec<SideRow>, Vec<(usize, usize)>),
@@ -73,8 +90,9 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(root_name: String) -> Self {
+    pub fn new() -> Self {
         Self {
+            workspace: Workspace::Files,
             files: vec![],
             query: String::new(),
             filtered: vec![],
@@ -95,26 +113,28 @@ impl App {
             side_by_side: true,
             auto_layout: true,
             show_sidebar: true,
-            show_menu_bar: true,
             line_numbers: true,
             wrap_lines: true,
             hunk_headers: true,
-            menu: None,
-            menu_row: 0,
             show_help: false,
             help_scroll: 0,
             scanning: true,
-            status: String::new(),
             gen_files: 0,
             gen_diff: 0,
             matcher: SkimMatcherV2::default(),
             last_refresh: Instant::now(),
             frame: 0,
-            root_name,
             side_cache: (vec![], vec![]),
             layout: LayoutCache::default(),
             display: Default::default(),
             zoom: Default::default(),
+        }
+    }
+
+    pub fn open_workspace(&mut self, workspace: Workspace) {
+        if self.workspace != workspace {
+            self.workspace = workspace;
+            self.zoom.reset();
         }
     }
 
@@ -294,7 +314,6 @@ impl App {
             .partition_point(|&h| h < id)
             .min(self.hunks.len().saturating_sub(1));
         self.display.invalidate();
-        self.status.clear();
     }
 
     pub fn move_cursor(&mut self, delta: isize) {
@@ -431,7 +450,6 @@ impl App {
         self.hunks = hunks;
         self.expanded_gaps.clear();
         self.gap_anchor = None;
-        self.status.clear();
         self.hunk_idx = 0;
         self.diff_scroll = 0;
         self.scroll_x = 0;

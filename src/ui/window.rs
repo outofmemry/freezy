@@ -54,6 +54,7 @@ impl WindowZoom {
         self.hidden.clear();
     }
 
+    #[cfg(test)]
     pub fn level(&self) -> usize {
         self.hidden.len()
     }

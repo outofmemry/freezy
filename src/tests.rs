@@ -14,7 +14,7 @@ fn file(repo: &str, rel: &str) -> FileEntry {
 }
 
 fn fixture() -> App {
-    let mut app = App::new("freezy".into());
+    let mut app = App::new();
     app.set_files(
         0,
         vec![
@@ -132,17 +132,20 @@ fn hunk_layout_controls_and_rendered_navigation() {
     let mut app = fixture();
     let buffer = draw(&mut app, 160, 46);
     let text = screen(&buffer);
-    assert!(text.starts_with("  File  View  Navigate  Agent  Extensions  Help"));
+    assert!(text.lines().next().unwrap().contains("1. Files"));
+    assert!(!text.contains("File  View  Navigate"));
     assert!(text.contains("SOURCE CONTROL  3"));
     assert!(!text.contains("ORIGINAL"));
     assert!(!text.contains("diff --git"));
     assert_eq!(app.layout.side.x, 1);
     assert_eq!(app.layout.side.width, 36);
     assert_eq!(app.layout.diff.x, 38);
-    assert_eq!(buffer[(1, 3)].bg, theme::SEL_BG);
-    assert_eq!(buffer[(1, 1)].bg, theme::PANEL_ALT);
-    assert_eq!(buffer[(37, 2)].fg, theme::BORDER);
-    assert_eq!(buffer[(120, 4)].bg, theme::PANEL_ALT);
+    assert_eq!(app.layout.workspace_tabs[0].y, 0);
+    assert_eq!(app.layout.workspace_tabs[0].height, 2);
+    assert_eq!(buffer[(1, 4)].bg, theme::SEL_BG);
+    assert_eq!(buffer[(1, 2)].bg, theme::PANEL_ALT);
+    assert_eq!(buffer[(37, 3)].fg, theme::BORDER);
+    assert_eq!(buffer[(120, 5)].bg, theme::PANEL_ALT);
     assert_eq!(app.sidebar_hit(0), Some(0));
     assert_eq!(app.sidebar_hit(1), Some(0));
     assert_eq!(app.sidebar_hit(3), None); // gap between repositories
@@ -154,21 +157,26 @@ fn hunk_layout_controls_and_rendered_navigation() {
     press(&mut app, KeyCode::Char(']'));
     assert_eq!(app.hunk_idx, 1);
     assert_eq!(app.diff_scroll, app.display.hunks[1]);
+    let ruler_height = app.layout.ruler.height as usize;
     let marked = app
-        .ruler_marks(45)
+        .ruler_marks(ruler_height)
         .iter()
         .position(|mark| *mark == Some(0))
         .unwrap();
-    app.ruler_jump(marked as f64 / 45.0);
+    app.ruler_jump(marked as f64 / ruler_height as f64);
     assert_eq!(app.hunk_idx, 0);
 
-    press(&mut app, KeyCode::F(10));
-    press(&mut app, KeyCode::Right);
-    press(&mut app, KeyCode::Down); // Stack
-    assert!(screen(&draw(&mut app, 160, 46)).contains("[ ] Stack"));
-    press(&mut app, KeyCode::Enter);
-    assert!(!app.side_by_side);
-    assert!(app.menu.is_none());
+    let without_navbar = screen(&draw(&mut app, 160, 46));
+    for key in [KeyCode::Char('M'), KeyCode::F(10)] {
+        press(&mut app, key);
+        assert_eq!(screen(&draw(&mut app, 160, 46)), without_navbar);
+    }
+    for (key, split) in [('<', false), ('>', true), ('<', false)] {
+        press(&mut app, KeyCode::Char(key));
+        assert_eq!(app.side_by_side, split);
+        assert!(!app.auto_layout);
+        assert_eq!(app.workspace, Workspace::Files);
+    }
     draw(&mut app, 100, 20);
     assert!(app
         .display
@@ -201,6 +209,97 @@ fn hunk_layout_controls_and_rendered_navigation() {
     assert_eq!(app.selected_file().unwrap().path, app.diff_title);
     press(&mut app, KeyCode::Char('?'));
     assert!(screen(&draw(&mut app, 100, 40)).contains("Controls help"));
+}
+
+#[test]
+fn workspace_tabs_switch_without_changing_the_files_review() {
+    let input = |app: &mut App, event| {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        assert!(!handle_input(event, app, &tx, Path::new(".")));
+    };
+    let state = |app: &App| {
+        (
+            app.selected,
+            app.hunk_idx,
+            app.cursor_row,
+            app.diff_scroll,
+            app.scroll_x,
+            app.gen_files,
+            app.gen_diff,
+            app.side_by_side,
+            app.auto_layout,
+            app.show_sidebar,
+            app.diff_title.clone(),
+        )
+    };
+    let mut app = fixture();
+    app.auto_layout = false;
+    app.side_by_side = false;
+    app.scroll_x = 4;
+    let first = draw(&mut app, 160, 12);
+    let first_text = screen(&first);
+    for (index, workspace) in Workspace::ALL.iter().enumerate() {
+        assert!(first_text.contains(&format!("{}. {}", index + 1, workspace.label())));
+    }
+    press(&mut app, KeyCode::Char(']'));
+    let original = screen(&draw(&mut app, 160, 12));
+    let saved = state(&app);
+
+    for index in [1, 2, 3, 0] {
+        let tab = app.layout.workspace_tabs[index];
+        input(
+            &mut app,
+            Event::Mouse(event::MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: tab.x + tab.width / 2,
+                row: tab.y + (index % 2) as u16,
+                modifiers: KeyModifiers::NONE,
+            }),
+        );
+        let buffer = draw(&mut app, 160, 12);
+        assert_eq!(app.workspace, Workspace::ALL[index]);
+        if app.workspace != Workspace::Files {
+            assert!(app.layout.side.is_empty() && app.layout.diff.is_empty());
+            assert!(app.zoom.regions.is_empty());
+            assert!(!screen(&buffer).contains("SOURCE CONTROL"));
+            assert_eq!(buffer[(10, 6)].bg, theme::PANEL);
+            for key in ['n', '>', '<'] {
+                press(&mut app, KeyCode::Char(key));
+                assert_eq!(app.workspace, Workspace::ALL[index]);
+                assert_eq!(state(&app), saved);
+            }
+            input(
+                &mut app,
+                Event::Mouse(event::MouseEvent {
+                    kind: MouseEventKind::ScrollDown,
+                    column: 5,
+                    row: 6,
+                    modifiers: KeyModifiers::NONE,
+                }),
+            );
+        }
+        assert_eq!(state(&app), saved);
+    }
+    assert_eq!(screen(&draw(&mut app, 160, 12)), original);
+    for (index, number) in ['1', '2', '3', '4'].into_iter().enumerate() {
+        press(&mut app, KeyCode::Char(number));
+        draw(&mut app, 160, 12);
+        assert_eq!(app.workspace, Workspace::ALL[index]);
+        assert_eq!(state(&app), saved);
+    }
+    press(&mut app, KeyCode::Char('1'));
+    press(&mut app, KeyCode::Char('/'));
+    for number in "1234<>".chars() {
+        press(&mut app, KeyCode::Char(number));
+        assert_eq!(app.workspace, Workspace::Files);
+    }
+    assert_eq!(app.query, "1234<>");
+    assert!(!app.side_by_side && !app.auto_layout);
+    press(&mut app, KeyCode::Esc);
+    for workspace in Workspace::ALL {
+        app.open_workspace(workspace);
+        draw(&mut app, 1, 1);
+    }
 }
 
 #[test]
@@ -351,7 +450,7 @@ fn window_zoom_follows_pointer_and_restores_layout_step_by_step() {
     assert_eq!(app.zoom.focused, REVIEW);
 
     // Split, stack, and responsive auto preserve all changes and view preferences.
-    for mode in ['1', '2', '0'] {
+    for mode in ['>', '<', '0'] {
         for width in [100, 160] {
             let mut app = fixture();
             press(&mut app, KeyCode::Char(mode));
@@ -375,7 +474,7 @@ fn window_zoom_follows_pointer_and_restores_layout_step_by_step() {
             for change in ["let value = 1", "let value = 2", "old();", "println!"] {
                 assert!(text.contains(change));
             }
-            if mode == '1' {
+            if mode == '>' {
                 split_content(&app);
             }
             press(&mut app, KeyCode::Char('+'));
@@ -405,12 +504,7 @@ fn window_zoom_follows_pointer_and_restores_layout_step_by_step() {
     press(&mut app, KeyCode::Char('+'));
     assert_eq!(app.zoom.level(), 0);
     press(&mut app, KeyCode::Esc);
-    press(&mut app, KeyCode::F(10));
-    press(&mut app, KeyCode::Char('+'));
-    assert_eq!(app.zoom.level(), 0);
-    press(&mut app, KeyCode::Esc);
-
-    for key in ['1', '2', '0', 'v', 's'] {
+    for key in ['>', '<', '0', 'v', 's'] {
         let mut app = fixture();
         draw(&mut app, 160, 30);
         press(&mut app, KeyCode::Char('+'));
@@ -496,14 +590,13 @@ fn tiny_windows_empty_loading_and_overlays_never_panic() {
         (80, 24),
         (240, 60),
     ] {
-        for mode in 0..4 {
+        for mode in 0..3 {
             app.searching = mode == 1;
             app.show_help = mode == 2;
-            app.menu = (mode == 3).then_some(1);
             draw(&mut app, width, height);
         }
     }
-    let mut empty = App::new("empty".into());
+    let mut empty = App::new();
     assert!(screen(&draw(&mut empty, 100, 20)).contains("Loading changes"));
     empty.set_files(0, vec![]);
     assert!(screen(&draw(&mut empty, 100, 20)).contains("No local changes"));
@@ -574,7 +667,7 @@ fn tsx_syntax_colors_survive_split_stack_and_change_backgrounds() {
         );
     }
     for split in [true, false] {
-        let mut app = App::new("freezy".into());
+        let mut app = App::new();
         let entry = file("freezy", "src/Widget.tsx");
         app.set_files(0, vec![entry.clone()]);
         app.set_diff(0, entry.path, lines.clone(), vec![1], syntax.clone());
@@ -718,7 +811,7 @@ fn git_context_gaps_expand_and_collapse_in_both_views() {
     assert!(model::with_context(&compact, &[]).is_none());
 
     for split in [true, false] {
-        let mut app = App::new("test".into());
+        let mut app = App::new();
         app.set_files(0, vec![entry.clone()]);
         let syntax = ui::syntax::highlight(&lines, &entry.rel);
         app.set_diff(0, entry.path.clone(), lines.clone(), hunks.clone(), syntax);
@@ -809,7 +902,7 @@ fn git_context_gaps_expand_and_collapse_in_both_views() {
         .iter()
         .any(|l| l.kind == DKind::Gap && l.text == "56 unchanged lines"));
     assert_eq!(trailing.last().unwrap().new_no, Some(73));
-    let mut tail_app = App::new("test".into());
+    let mut tail_app = App::new();
     tail_app.set_files(0, vec![entry.clone()]);
     let (trailing, trailing_hunks) = git::load_diff_text(&dir.0, &entry);
     let syntax = ui::syntax::highlight(&trailing, &entry.rel);

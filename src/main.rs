@@ -17,7 +17,7 @@ use std::{
 };
 
 use anyhow::Result;
-use app::{App, Msg};
+use app::{App, Msg, Workspace};
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseButton,
     MouseEventKind,
@@ -57,7 +57,6 @@ fn load_selected(tx: &tokio::sync::mpsc::Sender<Msg>, root: &Path, app: &mut App
     app.display = Default::default();
     app.expanded_gaps.clear();
     app.gap_anchor = None;
-    app.status.clear();
     if let Some(f) = app.selected_file() {
         app.loading_diff = true;
         app.diff_title = f.path.clone();
@@ -98,11 +97,7 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let root_name = root
-        .file_name()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| root.to_string_lossy().into_owned());
-    let mut app = App::new(root_name);
+    let mut app = App::new();
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Msg>(64);
 
     // First load — async so the window paints in ~1 frame.
@@ -180,7 +175,7 @@ fn in_rect(r: &ratatui::layout::Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
 }
 
-/// Menus, the picker, and keyboard shortcuts all dispatch through this handler.
+/// Workspace tabs, the picker, and keyboard shortcuts share this handler.
 fn handle_input(
     event: Event,
     app: &mut App,
@@ -190,7 +185,7 @@ fn handle_input(
     match event {
         Event::Key(key) => handle_key(key, app, tx, root),
         Event::Mouse(mouse) => {
-            if !app.show_help && !app.searching && app.menu.is_none() {
+            if !app.show_help && !app.searching {
                 if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
                     if let Some((id, maximize)) = app.zoom.control_at(mouse.column, mouse.row) {
                         app.zoom.focused = id;
@@ -234,33 +229,14 @@ fn handle_input(
                 }
                 if let Some(index) = app
                     .layout
-                    .menus
+                    .workspace_tabs
                     .iter()
                     .position(|r| in_rect(r, mouse.column, mouse.row))
                 {
-                    app.menu = if app.menu == Some(index) {
-                        None
-                    } else {
-                        Some(index)
-                    };
-                    app.menu_row = 0;
+                    app.open_workspace(Workspace::ALL[index]);
                     return false;
                 }
-                if let Some(menu) = app.menu.take() {
-                    if in_rect(&app.layout.menu_items, mouse.column, mouse.row) {
-                        let row = (mouse.row - app.layout.menu_items.y) as usize;
-                        if let Some(key) = ui::chrome::menu_entries(app, menu)
-                            .get(row)
-                            .and_then(|e| e.key)
-                        {
-                            return handle_key(
-                                event::KeyEvent::new(key, KeyModifiers::NONE),
-                                app,
-                                tx,
-                                root,
-                            );
-                        }
-                    }
+                if app.workspace != Workspace::Files {
                     return false;
                 }
                 if in_rect(&app.layout.side, mouse.column, mouse.row) {
@@ -290,7 +266,7 @@ fn handle_input(
                 MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
             ) {
                 let down = mouse.kind == MouseEventKind::ScrollDown;
-                if app.menu.is_some() {
+                if app.workspace != Workspace::Files {
                     return false;
                 }
                 if app.searching {
@@ -320,7 +296,7 @@ fn handle_input(
 }
 
 fn handle_key(
-    mut key: event::KeyEvent,
+    key: event::KeyEvent,
     app: &mut App,
     tx: &tokio::sync::mpsc::Sender<Msg>,
     root: &Path,
@@ -346,40 +322,6 @@ fn handle_key(
             _ => {}
         }
         return false;
-    }
-    if let Some(menu) = app.menu {
-        let entries = ui::chrome::menu_entries(app, menu);
-        match key.code {
-            KeyCode::Esc | KeyCode::F(10) => app.menu = None,
-            KeyCode::Left | KeyCode::Right => {
-                app.menu = Some((menu + if key.code == KeyCode::Right { 1 } else { 5 }) % 6);
-                app.menu_row = 0;
-            }
-            KeyCode::Down | KeyCode::Up => {
-                app.menu_row = (app.menu_row
-                    + if key.code == KeyCode::Down {
-                        1
-                    } else {
-                        entries.len() - 1
-                    })
-                    % entries.len();
-            }
-            KeyCode::Enter => {
-                if let Some(code) = entries.get(app.menu_row).and_then(|e| e.key) {
-                    key.code = code;
-                    app.menu = None;
-                } else {
-                    return false;
-                }
-            }
-            _ => return false,
-        }
-        if key.code != KeyCode::Enter && app.menu.is_some() {
-            return false;
-        }
-        if matches!(key.code, KeyCode::Esc | KeyCode::F(10)) {
-            return false;
-        }
     }
     if app.searching {
         match key.code {
@@ -415,9 +357,16 @@ fn handle_key(
         }
         return false;
     }
-    let page = app.layout.diff.height.saturating_sub(2).max(1) as usize;
     match key.code {
         KeyCode::Char('q') => return true,
+        KeyCode::Char(number @ '1'..='4') => {
+            app.open_workspace(Workspace::ALL[number as usize - '1' as usize]);
+        }
+        KeyCode::Char('?') => {
+            app.show_help = true;
+            app.help_scroll = 0;
+        }
+        _ if app.workspace != Workspace::Files => return false,
         KeyCode::Char('+') => {
             app.zoom.maximize();
         }
@@ -463,9 +412,9 @@ fn handle_key(
             app.side_by_side = !app.side_by_side;
             app.auto_layout = false;
         }
-        KeyCode::Char('1' | '2' | '0') => {
+        KeyCode::Char('<' | '>' | '0') => {
             app.zoom.reset();
-            app.side_by_side = key.code != KeyCode::Char('2');
+            app.side_by_side = key.code != KeyCode::Char('<');
             app.auto_layout = key.code == KeyCode::Char('0');
         }
         KeyCode::Char('s') => {
@@ -481,15 +430,7 @@ fn handle_key(
         KeyCode::Char('z') => {
             if let Some(id) = app.selected_gap() {
                 app.toggle_gap(id);
-            } else if !app.loading_diff && !app.scanning {
-                app.status = "No unchanged context to expand".into();
             }
-        }
-        KeyCode::Char('M') => app.show_menu_bar = !app.show_menu_bar,
-        KeyCode::F(10) => {
-            app.show_menu_bar = true;
-            app.menu = Some(0);
-            app.menu_row = 0;
         }
         KeyCode::Char('/' | 'o') | KeyCode::Tab => {
             app.searching = true;
@@ -507,23 +448,23 @@ fn handle_key(
             spawn_files(tx.clone(), root.to_path_buf(), app.gen_files);
             load_selected(tx, root, app);
         }
-        KeyCode::Char('?') => {
-            app.show_help = true;
-            app.help_scroll = 0;
-        }
         KeyCode::PageDown | KeyCode::Char(' ' | 'f') => {
+            let page = app.layout.diff.height.saturating_sub(2).max(1) as usize;
             app.diff_scroll = app.diff_scroll.saturating_add(page);
             app.move_cursor(page as isize);
         }
         KeyCode::PageUp | KeyCode::Char('b') => {
+            let page = app.layout.diff.height.saturating_sub(2).max(1) as usize;
             app.diff_scroll = app.diff_scroll.saturating_sub(page);
             app.move_cursor(-(page as isize));
         }
         KeyCode::Char('d') => {
+            let page = app.layout.diff.height.saturating_sub(2).max(1) as usize;
             app.diff_scroll = app.diff_scroll.saturating_add((page / 2).max(1));
             app.move_cursor((page / 2).max(1) as isize);
         }
         KeyCode::Char('u') => {
+            let page = app.layout.diff.height.saturating_sub(2).max(1) as usize;
             app.diff_scroll = app.diff_scroll.saturating_sub((page / 2).max(1));
             app.move_cursor(-((page / 2).max(1) as isize));
         }
