@@ -1,6 +1,6 @@
 //! Core data model: files, diff lines, side-by-side rows.
 
-use crate::theme::{GREEN, RED, TEXT, YELLOW};
+use crate::utils::theme::{GREEN, RED, TEXT, YELLOW};
 
 #[derive(Clone, Debug)]
 pub struct FileEntry {

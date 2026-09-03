@@ -1,20 +1,18 @@
 //! Workspace tabs, file panes, review stream, and overview ruler.
 
-pub mod chrome;
-pub mod diff;
-pub mod sidebar;
+pub mod components;
+pub mod primitives;
 pub mod syntax;
-pub mod window;
 
-pub use window::Window;
-use window::{REVIEW, SIDEBAR};
+use components::{diff, help, ruler, search, sidebar, tabs};
+use primitives::window::{Window, REVIEW, SIDEBAR};
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::widgets::Borders;
 
 use crate::{
     app::{App, Workspace},
-    theme::BG,
+    utils::theme::BG,
 };
 
 pub fn render(frame: &mut ratatui::Frame, app: &mut App) {
@@ -28,7 +26,7 @@ pub fn render(frame: &mut ratatui::Frame, app: &mut App) {
         area.width.saturating_sub(2),
         area.height,
     ));
-    chrome::render_workspace_tabs(frame, app, shell[0]);
+    tabs::render_workspace_tabs(frame, app, shell[0]);
     let workspace = Window::default().render(frame, shell[1]);
     if app.workspace == Workspace::Files {
         let review_visible = !app.zoom.is_hidden(REVIEW);
@@ -50,7 +48,7 @@ pub fn render(frame: &mut ratatui::Frame, app: &mut App) {
         }
         if review_visible {
             diff::render_diff(frame, app, columns[1]);
-            chrome::render_ruler(frame, app, app.layout.ruler);
+            ruler::render_ruler(frame, app, app.layout.ruler);
         }
     } else {
         Window::default()
@@ -60,9 +58,9 @@ pub fn render(frame: &mut ratatui::Frame, app: &mut App) {
     }
     app.zoom.ensure_focus();
     if app.searching {
-        chrome::render_search_popup(frame, app, area);
+        search::render_search_popup(frame, app, area);
     }
     if app.show_help {
-        chrome::render_help_overlay(frame, app, area);
+        help::render_help_overlay(frame, app, area);
     }
 }

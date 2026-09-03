@@ -7,7 +7,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::theme::{ACCENT, BORDER, MUTED, PANEL, TEXT};
+use crate::utils::theme::{ACCENT, BORDER, MUTED, PANEL, TEXT};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// Identity of a zoomable window, never of content such as an old/new diff column.

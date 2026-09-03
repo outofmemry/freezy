@@ -74,7 +74,7 @@ inline emphasis. Empty diff padding stays black.
 
 ## Shared UI component
 
-`ui::Window` in `src/ui/window.rs` is the common shell for the sidebar, diff
+`ui::primitives::window::Window` in `src/ui/primitives/window.rs` is the common shell for the sidebar, diff
 viewer, workspace tabs, empty workspaces, overview ruler, and dialogs. It owns the base
 background, border styling, padding, and optional overlay clearing. Views use
 composition: render a Window, then draw their content in the returned rectangle.
@@ -89,7 +89,7 @@ frame.render_widget(Paragraph::new("Window content"), body);
 ```
 
 Change shared frame defaults in `Window::default()` and palette colors in
-`src/theme.rs`. Content-specific styles such as diff highlights remain in their views.
+`src/utils/theme.rs`. Content-specific styles such as diff highlights remain in their views.
 
 ### Level-wise maximize
 

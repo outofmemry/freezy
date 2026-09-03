@@ -8,12 +8,12 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use super::{window::SIDEBAR, Window};
+use crate::ui::primitives::window::{Window, SIDEBAR};
 
 use crate::{
     app::App,
-    model::{kind_color, stats_label},
-    theme::{clipped, ACCENT, MUTED, PANEL, SEL_BG, SEL_FG, TEXT},
+    core::model::{kind_color, stats_label},
+    utils::theme::{clipped, ACCENT, MUTED, PANEL, SEL_BG, SEL_FG, TEXT},
 };
 
 pub fn render_sidebar(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {

@@ -1,8 +1,8 @@
 //! Tokenize on the Git worker, once per diff; painting never runs a parser.
 
 use crate::{
-    model::{DKind, DLine},
-    theme::{BLUE, CYAN, FAINT, GREEN, MAGENTA, RED, TEXT, YELLOW},
+    core::model::{DKind, DLine},
+    utils::theme::{BLUE, CYAN, FAINT, GREEN, MAGENTA, RED, TEXT, YELLOW},
 };
 use ratatui::{
     style::{Color, Style},

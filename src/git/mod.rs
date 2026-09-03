@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use git2::{Diff, DiffOptions, Patch, Repository, Status, StatusOptions};
 
-use crate::model::{DKind, DLine, FileEntry};
+use crate::core::model::{DKind, DLine, FileEntry};
 
 /// Repo paths barely change — cache 2s so per-file diffs skip readdir.
 type Repos = Vec<(String, PathBuf)>;
@@ -265,7 +265,7 @@ fn git_diff_lines(dir: &Path, rel: &str) -> (Vec<DLine>, Vec<usize>) {
         return (lines, hunks);
     }
     let (full, _) = git_diff_lines_with_context(dir, rel, u32::MAX);
-    crate::model::with_context(&lines, &full).unwrap_or((lines, hunks))
+    crate::core::model::with_context(&lines, &full).unwrap_or((lines, hunks))
 }
 
 fn git_diff_lines_with_context(dir: &Path, rel: &str, context: u32) -> (Vec<DLine>, Vec<usize>) {

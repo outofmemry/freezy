@@ -6,7 +6,7 @@ use std::{cmp::Reverse, collections::HashSet, time::Instant};
 use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
 use ratatui::{layout::Rect, text::Line};
 
-use crate::model::{side_rows, DKind, DLine, FileEntry, SideRow};
+use crate::core::model::{side_rows, DKind, DLine, FileEntry, SideRow};
 
 pub enum Msg {
     Files(u64, Vec<FileEntry>),
@@ -85,8 +85,8 @@ pub struct App {
     /// when a diff loads — render just slices it.
     pub side_cache: (Vec<SideRow>, Vec<(usize, usize)>),
     pub layout: LayoutCache,
-    pub display: crate::ui::diff::DiffView,
-    pub zoom: crate::ui::window::WindowZoom,
+    pub display: crate::ui::components::diff::DiffView,
+    pub zoom: crate::ui::primitives::window::WindowZoom,
 }
 
 impl App {

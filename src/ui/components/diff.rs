@@ -8,12 +8,12 @@ use ratatui::{
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use super::{window::REVIEW, Window};
+use crate::ui::primitives::window::{Window, REVIEW};
 
 use crate::{
     app::App,
-    model::{emph_ranges, Cell, DKind, SideRow},
-    theme::{
+    core::model::{emph_ranges, Cell, DKind, SideRow},
+    utils::theme::{
         clipped, spinner, ACCENT, ADD_BG, ADD_EMPH, BG, BLUE, CYAN, DEL_BG, DEL_EMPH, FAINT, GREEN,
         MUTED, PANEL, PANEL_ALT, RED, SEL_BG, SEL_FG, TEXT,
     },
