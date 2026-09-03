@@ -69,6 +69,7 @@ pub struct App {
     pub side_cache: (Vec<SideRow>, Vec<(usize, usize)>),
     pub layout: LayoutCache,
     pub display: crate::ui::diff::DiffView,
+    pub zoom: crate::ui::window::WindowZoom,
 }
 
 impl App {
@@ -113,6 +114,7 @@ impl App {
             side_cache: (vec![], vec![]),
             layout: LayoutCache::default(),
             display: Default::default(),
+            zoom: Default::default(),
         }
     }
 

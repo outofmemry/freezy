@@ -70,6 +70,9 @@ pub fn menu_entries(app: &App, menu: usize) -> Vec<MenuEntry> {
                 KeyCode::Char('z'),
             ),
             toggle("Menu bar", app.show_menu_bar, "M", KeyCode::Char('M')),
+            item("Maximize window one level", "+", KeyCode::Char('+')),
+            item("Restore window one level", "-", KeyCode::Char('-')),
+            note(&format!("Window zoom: level {}", app.zoom.level())),
             note("Theme: Catppuccin Mocha"),
         ],
         2 => vec![
@@ -288,6 +291,8 @@ pub fn render_help_overlay(frame: &mut ratatui::Frame, app: &mut App, area: Rect
         ("Click", "select files, menus, or changes"),
         ("", ""),
         ("View", ""),
+        ("+ / -", "maximize / restore one level"),
+        ("Hover / click / F6", "choose window to maximize"),
         ("1 / 2 / 0", "split / stack / auto"),
         ("s", "toggle sidebar"),
         ("z / click gap", "expand / collapse unchanged lines"),

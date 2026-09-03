@@ -27,6 +27,8 @@ cargo build --release
 | `g` / `G` · Home / End | start / end of diff |
 | `]` / `[` | next / previous hunk |
 | `z` / click Show/Hide gap row | expand / collapse unchanged context near the selected hunk |
+| `+` / `-` · window `[-][+]` buttons | maximize / restore one window level |
+| hover / click a pane · F6 | choose the window to maximize |
 | `1` / `2` / `0` | split / stack / auto |
 | `v` | toggle split / stack |
 | `s` | show / hide sidebar |
@@ -65,6 +67,28 @@ frame.render_widget(Paragraph::new("Window content"), body);
 Change shared frame defaults in `Window::default()` and palette colors in
 `src/theme.rs`. Content-specific styles such as diff highlights remain in their views.
 
+### Level-wise maximize
+
+Freezy currently has **two zoomable windows**: the sidebar and the whole file
+viewer. The old/new diff columns are content inside the viewer, not separate
+windows. Hover either column (or cycle windows with F6), then press `+` or click
+the viewer's `[+]` to hide the sidebar and expand the entire diff. Another `+`
+does nothing: it never hides either diff column. Maximizing the sidebar instead
+hides the whole viewer in one step. `-` or `[-]` restores the previous layout and
+widths.
+
+Hidden windows retain their data, and zoom does not change the saved sidebar or
+split/stack options; Auto keeps its usual width-responsive layout. Explicit
+layout commands (`1`, `2`, `0`, `v`, `s`) start a fresh zoom sequence. Search, help,
+and menu overlays keep their existing input behavior.
+
+Future actual windows can use a stable `WindowId` and register their rectangle
+through `Window::controls`. Give related windows the same group ID, and exclude
+hidden IDs from their layout. The shared `WindowZoom` controller is independent
+of the current window count: it hides the nearest outside window before a peer
+in the same group, restoring each step in reverse order. Internal content such
+as diff columns does not need a window ID.
+
 ## Performance and checks
 
 Git runs in-process through libgit2 on background threads. Syntax highlighting
@@ -84,4 +108,4 @@ cargo clippy -- -D warnings
 
 Tests cover split/stack rendering, exact shell geometry and palette, file
 groups and hit targets, wrapping, Unicode, hunk navigation, menus, filtering,
-empty/loading states, stale results, and tiny terminal sizes.
+empty/loading states, stale results, tiny terminal sizes, and level-wise window zoom.

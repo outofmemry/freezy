@@ -190,6 +190,20 @@ fn handle_input(
     match event {
         Event::Key(key) => handle_key(key, app, tx, root),
         Event::Mouse(mouse) => {
+            if !app.show_help && !app.searching && app.menu.is_none() {
+                if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+                    if let Some((id, maximize)) = app.zoom.control_at(mouse.column, mouse.row) {
+                        app.zoom.focused = id;
+                        if maximize {
+                            app.zoom.maximize();
+                        } else {
+                            app.zoom.restore();
+                        }
+                        return false;
+                    }
+                }
+                app.zoom.focus_at(mouse.column, mouse.row);
+            }
             if app.show_help {
                 match mouse.kind {
                     MouseEventKind::ScrollDown => {
@@ -404,6 +418,22 @@ fn handle_key(
     let page = app.layout.diff.height.saturating_sub(2).max(1) as usize;
     match key.code {
         KeyCode::Char('q') => return true,
+        KeyCode::Char('+') => {
+            app.zoom.maximize();
+        }
+        KeyCode::Char('-') => {
+            app.zoom.restore();
+        }
+        KeyCode::F(6) => {
+            if let Some(index) = app
+                .zoom
+                .regions
+                .iter()
+                .position(|region| region.id == app.zoom.focused)
+            {
+                app.zoom.focused = app.zoom.regions[(index + 1) % app.zoom.regions.len()].id;
+            }
+        }
         KeyCode::Char('n' | '.') => {
             app.move_file(1);
             load_selected(tx, root, app);
@@ -429,14 +459,19 @@ fn handle_key(
                 .saturating_sub(app.layout.diff.height as usize)
         }
         KeyCode::Char('v') => {
+            app.zoom.reset();
             app.side_by_side = !app.side_by_side;
             app.auto_layout = false;
         }
         KeyCode::Char('1' | '2' | '0') => {
+            app.zoom.reset();
             app.side_by_side = key.code != KeyCode::Char('2');
             app.auto_layout = key.code == KeyCode::Char('0');
         }
-        KeyCode::Char('s') => app.show_sidebar = !app.show_sidebar,
+        KeyCode::Char('s') => {
+            app.zoom.reset();
+            app.show_sidebar = !app.show_sidebar;
+        }
         KeyCode::Char('l') => app.line_numbers = !app.line_numbers,
         KeyCode::Char('w') => {
             app.wrap_lines = !app.wrap_lines;

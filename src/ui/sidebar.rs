@@ -8,7 +8,7 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use super::Window;
+use super::{window::SIDEBAR, Window};
 
 use crate::{
     app::App,
@@ -25,8 +25,12 @@ pub fn render_sidebar(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
     ])
     .split(area);
     frame.render_widget(
-        Paragraph::new(format!(" SOURCE CONTROL  {}", app.visible().len()))
-            .style(Style::default().fg(MUTED).bg(PANEL_ALT)),
+        Paragraph::new(clipped(
+            &format!(" SOURCE CONTROL  {}", app.visible().len()),
+            area.width
+                .saturating_sub(if area.width >= 6 { 6 } else { 0 }) as usize,
+        ))
+        .style(Style::default().fg(MUTED).bg(PANEL_ALT)),
         sections[0],
     );
     let body = sections[1];
@@ -108,4 +112,5 @@ pub fn render_sidebar(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
         .style(Style::default().fg(MUTED).bg(PANEL_ALT)),
         sections[2],
     );
+    Window::controls(frame, &mut app.zoom, SIDEBAR, SIDEBAR, area);
 }

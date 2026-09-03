@@ -8,7 +8,7 @@ use ratatui::{
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use super::Window;
+use super::{window::REVIEW, Window};
 
 use crate::{
     app::App,
@@ -27,12 +27,19 @@ pub struct DiffView {
     pub code_rows: Vec<usize>,
     // Populated columns for each code row; empty split padding is never highlighted.
     code_columns: Vec<std::ops::Range<usize>>,
+    source_rows: Vec<[Option<usize>; 2]>,
     pub gaps: Vec<(usize, std::ops::Range<usize>)>,
 }
 
 impl DiffView {
     pub fn invalidate(&mut self) {
         self.key = None;
+    }
+
+    pub fn source_at(&self, row: usize) -> Option<usize> {
+        let index = self.code_rows.binary_search(&row).ok()?;
+        let sources = self.source_rows[index];
+        sources[1].or(sources[0])
     }
 }
 
@@ -268,15 +275,16 @@ fn prepare(app: &mut App, area: Rect) {
     if app.display.key == Some(key) {
         return;
     }
+    let source = app.display.source_at(app.cursor_row);
+    let cursor_offset = app
+        .cursor_row
+        .checked_sub(app.rendered_scroll())
+        .filter(|offset| *offset < area.height as usize);
     let mut view = DiffView {
         key: Some(key),
         ..Default::default()
     };
     let width = area.width as usize;
-    view.lines.push(Line::styled(
-        "─".repeat(width),
-        Style::default().fg(BORDER).bg(PANEL),
-    ));
     view.lines
         .push(Line::styled("", Style::default().bg(PANEL)));
 
@@ -383,6 +391,10 @@ fn prepare(app: &mut App, area: Rect) {
                             )]
                         }));
                         view.code_rows.push(view.lines.len());
+                        view.source_rows.push([
+                            old.as_ref().map(|cell| cell.source),
+                            new.as_ref().map(|cell| cell.source),
+                        ]);
                         let start = if old.is_some() && i < left.len() {
                             0
                         } else {
@@ -438,6 +450,8 @@ fn prepare(app: &mut App, area: Rect) {
                         .extend(view.lines.len()..view.lines.len() + lines.len());
                     view.code_columns
                         .extend(lines.iter().map(|_| 0..code_width));
+                    view.source_rows
+                        .extend(lines.iter().map(|_| [Some(source); 2]));
                     view.lines.extend(lines);
                 }
             }
@@ -448,12 +462,24 @@ fn prepare(app: &mut App, area: Rect) {
         .display
         .code_rows
         .partition_point(|&row| row < app.cursor_row);
-    app.cursor_row = view
-        .code_rows
-        .get(cursor_index)
-        .copied()
-        .or_else(|| view.code_rows.last().copied())
+    let anchored_row = source.and_then(|source| {
+        view.source_rows
+            .iter()
+            .position(|sources| sources.contains(&Some(source)))
+            .map(|index| view.code_rows[index])
+    });
+    app.cursor_row = anchored_row
+        .or_else(|| {
+            view.code_rows
+                .get(cursor_index)
+                .copied()
+                .or_else(|| view.code_rows.last().copied())
+        })
         .unwrap_or(0);
+    if let (Some(row), Some(offset)) = (anchored_row, cursor_offset) {
+        app.diff_scroll = row.saturating_sub(offset);
+        app.anim_scroll = app.diff_scroll as f64;
+    }
     if let Some((id, offset)) = app.gap_anchor.take() {
         if let Some((_, rows)) = view.gaps.iter().find(|(gap, _)| *gap == id) {
             app.diff_scroll = rows.start.saturating_sub(offset);
@@ -473,9 +499,20 @@ fn prepare(app: &mut App, area: Rect) {
 }
 
 pub fn render_diff(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
-    let area = Window::default()
+    let window = Window::default()
         .borders(Borders::LEFT | Borders::RIGHT)
         .render(frame, area);
+    // The controls have their own fixed header, outside the scrolling content.
+    frame.render_widget(
+        Paragraph::new("─".repeat(window.width as usize)).style(Style::default().fg(BORDER)),
+        Rect::new(window.x, window.y, window.width, 1.min(window.height)),
+    );
+    let area = Rect::new(
+        window.x,
+        window.y + 1.min(window.height),
+        window.width,
+        window.height.saturating_sub(1),
+    );
     app.layout.diff = area;
     if app.loading_diff
         || app.scanning
@@ -495,7 +532,6 @@ pub fn render_diff(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
         };
         frame.render_widget(
             Paragraph::new(vec![
-                Line::from("─".repeat(area.width as usize)).style(Style::default().fg(BORDER)),
                 Line::from(""),
                 Line::from(message).alignment(Alignment::Center),
                 Line::from(""),
@@ -504,6 +540,7 @@ pub fn render_diff(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
             .style(Style::default().fg(MUTED).bg(PANEL)),
             area,
         );
+        Window::controls(frame, &mut app.zoom, REVIEW, REVIEW, window);
         return;
     }
     prepare(app, area);
@@ -526,9 +563,10 @@ pub fn render_diff(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
         .take(area.height as usize)
         .enumerate()
     {
+        let display_row = start + offset;
         let row = Rect::new(area.x, area.y + offset as u16, area.width, 1);
         frame.render_widget(Paragraph::new(line.clone()), row);
-        if start + offset == app.cursor_row {
+        if display_row == app.cursor_row {
             let columns = app
                 .display
                 .code_rows
@@ -548,12 +586,11 @@ pub fn render_diff(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
                 }
             }
         }
-        if area.width > 0
-            && current.is_some_and(|from| start + offset >= from && start + offset < end)
-        {
+        if area.width > 0 && current.is_some_and(|from| display_row >= from && display_row < end) {
             frame.buffer_mut()[(row.x, row.y)]
                 .set_symbol("▌")
                 .set_fg(MUTED);
         }
     }
+    Window::controls(frame, &mut app.zoom, REVIEW, REVIEW, window);
 }

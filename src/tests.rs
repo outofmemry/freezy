@@ -204,6 +204,223 @@ fn hunk_layout_controls_and_rendered_navigation() {
 }
 
 #[test]
+fn window_zoom_follows_pointer_and_restores_layout_step_by_step() {
+    use ui::window::{WindowId, REVIEW, SIDEBAR};
+
+    let mouse = |app: &mut App, kind, x, y| {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        assert!(!handle_input(
+            Event::Mouse(event::MouseEvent {
+                kind,
+                column: x,
+                row: y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            app,
+            &tx,
+            Path::new("."),
+        ));
+    };
+    let regions = |app: &App| {
+        app.zoom
+            .regions
+            .iter()
+            .map(|r| (r.id, r.area))
+            .collect::<Vec<_>>()
+    };
+    let region = |app: &App, id: WindowId| *app.zoom.regions.iter().find(|r| r.id == id).unwrap();
+    let split_content = |app: &App| {
+        let rows: Vec<_> = app.display.lines.iter().map(ToString::to_string).collect();
+        assert!(rows
+            .iter()
+            .any(|row| { row.contains("let value = 1") && row.contains("let value = 2") }));
+        assert!(rows.iter().any(|row| row.contains("old();")));
+        assert!(rows.iter().any(|row| row.contains("println!")));
+    };
+
+    // Both diff columns are content inside REVIEW, never independent zoom targets.
+    for half in [0, 1] {
+        let mut app = fixture();
+        app.auto_layout = false;
+        let normal = screen(&draw(&mut app, 160, 30));
+        assert_eq!(normal.matches("[-][+]").count(), 2);
+        let original = regions(&app);
+        assert_eq!(original.len(), 2);
+        assert_eq!(original[0].0, SIDEBAR);
+        assert_eq!(original[1].0, REVIEW);
+        let pane = region(&app, REVIEW);
+        mouse(
+            &mut app,
+            MouseEventKind::Moved,
+            pane.area.x + half * pane.area.width / 2 + 2,
+            pane.area.y + 3,
+        );
+        assert_eq!(app.zoom.focused, REVIEW);
+        app.cursor_row = *app.display.code_rows.last().unwrap();
+        let source = app.display.source_at(app.cursor_row);
+        press(&mut app, KeyCode::Char('+'));
+        let maximized = screen(&draw(&mut app, 160, 30));
+        assert!(app.zoom.is_hidden(SIDEBAR));
+        assert_eq!(app.layout.side.width, 0);
+        assert!(region(&app, REVIEW).area.width > pane.area.width);
+        assert_eq!(app.display.source_at(app.cursor_row), source);
+        assert_eq!(maximized.matches("[-][+]").count(), 1);
+        assert_eq!(app.zoom.regions.len(), 1);
+        assert_eq!(app.zoom.regions[0].id, REVIEW);
+        split_content(&app);
+        let level_one = regions(&app);
+        press(&mut app, KeyCode::Char('+'));
+        assert_eq!(screen(&draw(&mut app, 160, 30)), maximized);
+        assert_eq!(app.zoom.level(), 1); // Another + cannot remove either diff column.
+        assert_eq!(regions(&app), level_one);
+        split_content(&app);
+        press(&mut app, KeyCode::Char('-'));
+        draw(&mut app, 160, 30);
+        assert_eq!(regions(&app), original);
+        split_content(&app);
+        press(&mut app, KeyCode::Char('-'));
+        assert_eq!(app.zoom.level(), 0);
+        assert!(app.show_sidebar && app.side_by_side && !app.auto_layout);
+
+        // Controls dispatch before content selection, without reloading Git.
+        for maximize in [true, true, false] {
+            let pane = region(&app, REVIEW);
+            let button = if maximize {
+                pane.maximize
+            } else {
+                pane.restore
+            };
+            mouse(
+                &mut app,
+                MouseEventKind::Down(MouseButton::Left),
+                button.x + 1,
+                button.y,
+            );
+            draw(&mut app, 160, 30);
+            assert_eq!(app.zoom.level(), usize::from(maximize));
+            split_content(&app);
+        }
+        assert_eq!(regions(&app), original);
+        assert_eq!(app.gen_diff, 0);
+        assert!(!app.loading_diff);
+
+        app.zoom.focused = SIDEBAR;
+        let ruler = app.layout.ruler;
+        mouse(&mut app, MouseEventKind::Moved, ruler.x, ruler.y + 2);
+        assert_eq!(app.zoom.focused, REVIEW);
+    }
+
+    let mut app = fixture();
+    app.show_sidebar = false;
+    let no_sidebar = screen(&draw(&mut app, 160, 30));
+    press(&mut app, KeyCode::Char('+'));
+    assert_eq!(screen(&draw(&mut app, 160, 30)), no_sidebar);
+    assert_eq!(app.zoom.level(), 0);
+    split_content(&app);
+    press(&mut app, KeyCode::Char('-'));
+    draw(&mut app, 160, 30);
+    assert!(!app.show_sidebar);
+    assert_eq!(app.layout.side.width, 0);
+
+    app.show_sidebar = true;
+    draw(&mut app, 160, 30);
+    let original = regions(&app);
+    app.zoom.focused = SIDEBAR;
+    press(&mut app, KeyCode::Char('+'));
+    let sidebar_only = screen(&draw(&mut app, 160, 30));
+    assert!(app.zoom.is_hidden(REVIEW));
+    assert_eq!(app.layout.diff.width, 0);
+    assert_eq!(app.layout.side.width, 158);
+    assert_eq!(app.zoom.regions.len(), 1);
+    assert_eq!(app.zoom.regions[0].id, SIDEBAR);
+    press(&mut app, KeyCode::Char('+'));
+    assert_eq!(screen(&draw(&mut app, 160, 30)), sidebar_only);
+    assert_eq!(app.zoom.level(), 1);
+    for (width, height) in [(0, 0), (1, 1), (10, 4), (60, 12), (160, 30)] {
+        draw(&mut app, width, height);
+    }
+    press(&mut app, KeyCode::Char('-'));
+    draw(&mut app, 160, 30);
+    assert_eq!(regions(&app), original);
+
+    // F6 cycles only the actual sidebar and file-viewer windows.
+    app.zoom.focused = REVIEW;
+    press(&mut app, KeyCode::F(6));
+    assert_eq!(app.zoom.focused, SIDEBAR);
+    press(&mut app, KeyCode::F(6));
+    assert_eq!(app.zoom.focused, REVIEW);
+
+    // Split, stack, and responsive auto preserve all changes and view preferences.
+    for mode in ['1', '2', '0'] {
+        for width in [100, 160] {
+            let mut app = fixture();
+            press(&mut app, KeyCode::Char(mode));
+            draw(&mut app, width, 30);
+            let original = regions(&app);
+            let options = (app.show_sidebar, app.side_by_side, app.auto_layout);
+            app.cursor_row = *app.display.code_rows.last().unwrap();
+            let source = app.display.source_at(app.cursor_row);
+            press(&mut app, KeyCode::Char('+'));
+            draw(&mut app, width, 30);
+            assert_eq!(app.zoom.level(), 1);
+            assert_eq!(app.zoom.focused, REVIEW);
+            assert_eq!(app.display.source_at(app.cursor_row), source);
+            let text = app
+                .display
+                .lines
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n");
+            for change in ["let value = 1", "let value = 2", "old();", "println!"] {
+                assert!(text.contains(change));
+            }
+            if mode == '1' {
+                split_content(&app);
+            }
+            press(&mut app, KeyCode::Char('+'));
+            assert_eq!(app.zoom.level(), 1);
+            for (width, height) in [(0, 0), (1, 1), (10, 4), (60, 12), (width, 30)] {
+                draw(&mut app, width, height);
+            }
+            assert_eq!(app.zoom.focused, REVIEW);
+            press(&mut app, KeyCode::Char('-'));
+            draw(&mut app, width, 30);
+            assert_eq!(regions(&app), original);
+            assert_eq!(
+                (app.show_sidebar, app.side_by_side, app.auto_layout),
+                options
+            );
+        }
+    }
+
+    // Search text and overlays never zoom the windows underneath them.
+    press(&mut app, KeyCode::Char('/'));
+    press(&mut app, KeyCode::Char('+'));
+    press(&mut app, KeyCode::Char('-'));
+    assert_eq!(app.query, "+-");
+    assert_eq!(app.zoom.level(), 0);
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Char('?'));
+    press(&mut app, KeyCode::Char('+'));
+    assert_eq!(app.zoom.level(), 0);
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::F(10));
+    press(&mut app, KeyCode::Char('+'));
+    assert_eq!(app.zoom.level(), 0);
+    press(&mut app, KeyCode::Esc);
+
+    for key in ['1', '2', '0', 'v', 's'] {
+        let mut app = fixture();
+        draw(&mut app, 160, 30);
+        press(&mut app, KeyCode::Char('+'));
+        assert_eq!(app.zoom.level(), 1);
+        press(&mut app, KeyCode::Char(key));
+        assert_eq!(app.zoom.level(), 0); // Explicit settings begin a fresh zoom sequence.
+    }
+}
+
+#[test]
 fn empty_split_cells_stay_clean_including_wrapped_and_selected_rows() {
     for kind in [DKind::Add, DKind::Del] {
         for paired in [false, true] {
