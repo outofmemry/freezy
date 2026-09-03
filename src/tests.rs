@@ -504,14 +504,33 @@ fn window_zoom_follows_pointer_and_restores_layout_step_by_step() {
     press(&mut app, KeyCode::Char('+'));
     assert_eq!(app.zoom.level(), 0);
     press(&mut app, KeyCode::Esc);
-    for key in ['>', '<', '0', 'v', 's'] {
+    // Changing diff presentation must not reopen a window hidden by maximize.
+    for (focused, hidden) in [(REVIEW, SIDEBAR), (SIDEBAR, REVIEW)] {
         let mut app = fixture();
         draw(&mut app, 160, 30);
+        let original = regions(&app);
+        app.zoom.focused = focused;
         press(&mut app, KeyCode::Char('+'));
-        assert_eq!(app.zoom.level(), 1);
-        press(&mut app, KeyCode::Char(key));
-        assert_eq!(app.zoom.level(), 0); // Explicit settings begin a fresh zoom sequence.
+        draw(&mut app, 160, 30);
+        let maximized = regions(&app);
+        for key in ['<', '>', 'v', '0', '<', '>'] {
+            press(&mut app, KeyCode::Char(key));
+            draw(&mut app, 160, 30);
+            assert_eq!(app.zoom.level(), 1, "layout key {key} reset zoom");
+            assert!(app.zoom.is_hidden(hidden));
+            assert_eq!(regions(&app), maximized);
+        }
+        press(&mut app, KeyCode::Char('-'));
+        draw(&mut app, 160, 30);
+        assert_eq!(app.zoom.level(), 0);
+        assert_eq!(regions(&app), original);
     }
+
+    let mut app = fixture();
+    draw(&mut app, 160, 30);
+    press(&mut app, KeyCode::Char('+'));
+    press(&mut app, KeyCode::Char('s'));
+    assert_eq!(app.zoom.level(), 0); // Explicit sidebar toggles still reset zoom.
 }
 
 #[test]

@@ -408,12 +408,10 @@ fn handle_key(
                 .saturating_sub(app.layout.diff.height as usize)
         }
         KeyCode::Char('v') => {
-            app.zoom.reset();
             app.side_by_side = !app.side_by_side;
             app.auto_layout = false;
         }
         KeyCode::Char('<' | '>' | '0') => {
-            app.zoom.reset();
             app.side_by_side = key.code != KeyCode::Char('<');
             app.auto_layout = key.code == KeyCode::Char('0');
         }

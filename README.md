@@ -87,10 +87,11 @@ hides the whole viewer in one step. `-` or `[-]` restores the previous layout an
 widths.
 
 Hidden windows retain their data, and zoom does not change the saved sidebar or
-split/stack options; Auto keeps its usual width-responsive layout. Explicit
-layout commands (`<`, `>`, `0`, `v`, `s`) start a fresh zoom sequence. Search and
-help overlays keep their existing input behavior; typing digits in search does
-not switch workspaces.
+split/stack options; Auto keeps its usual width-responsive layout. Changing the
+diff layout (`<`, `>`, `0`, `v`) preserves maximization and hidden windows; `-`
+still restores the previous window size. Toggling the sidebar (`s`) or switching
+workspaces starts a fresh zoom sequence. Search and help overlays keep their
+existing input behavior; typing digits in search does not switch workspaces.
 
 Future actual windows can use a stable `WindowId` and register their rectangle
 through `Window::controls`. Give related windows the same group ID, and exclude
