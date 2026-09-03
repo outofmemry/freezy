@@ -512,6 +512,90 @@ fn tiny_windows_empty_loading_and_overlays_never_panic() {
 }
 
 #[test]
+fn tsx_syntax_colors_survive_split_stack_and_change_backgrounds() {
+    use ratatui::style::Color;
+
+    let purple = Color::Rgb(203, 166, 247);
+    let comment = Color::Rgb(108, 112, 134);
+    let mut lines = vec![
+        DLine::plain("diff --git a/Widget.tsx b/Widget.tsx".into(), DKind::File),
+        DLine::plain("@@ -1,4 +1,4 @@".into(), DKind::Hunk),
+    ];
+    lines.extend(
+        [
+            (DKind::Ctx, 1, "import React from \"react\";"),
+            (DKind::Ctx, 2, "type Props = { title: string };"),
+            (DKind::Ctx, 3, "// Render the title"),
+            (
+                DKind::Del,
+                4,
+                "export const Widget = () => <h1 className=\"old\">Title</h1>;",
+            ),
+            (
+                DKind::Add,
+                4,
+                "export const Widget = () => <h1 className=\"new\">Title</h1>;",
+            ),
+        ]
+        .into_iter()
+        .map(|(kind, number, body)| DLine {
+            text: format!(
+                "{}{body}",
+                match kind {
+                    DKind::Del => '-',
+                    DKind::Add => '+',
+                    _ => ' ',
+                }
+            ),
+            kind,
+            old_no: (kind != DKind::Add).then_some(number),
+            new_no: (kind != DKind::Del).then_some(number),
+        }),
+    );
+    let syntax = ui::syntax::highlight(&lines, "src/Widget.tsx");
+    assert_eq!(syntax.len(), lines.len());
+    for (source, highlighted) in lines.iter().zip(&syntax).skip(2) {
+        assert_eq!(highlighted.to_string(), source.text[1..]);
+    }
+    for (token, color) in [
+        ("import", purple),
+        ("type", purple),
+        ("h1", purple),
+        ("react", theme::GREEN),
+        ("old", theme::GREEN),
+        ("Render", comment),
+    ] {
+        assert!(
+            syntax
+                .iter()
+                .flat_map(|line| &line.spans)
+                .any(|span| { span.content.contains(token) && span.style.fg == Some(color) }),
+            "TSX token {token:?} must have its semantic foreground"
+        );
+    }
+    for split in [true, false] {
+        let mut app = App::new("freezy".into());
+        let entry = file("freezy", "src/Widget.tsx");
+        app.set_files(0, vec![entry.clone()]);
+        app.set_diff(0, entry.path, lines.clone(), vec![1], syntax.clone());
+        app.side_by_side = split;
+        app.auto_layout = false;
+        let buffer = draw(&mut app, 220, 26);
+        for (symbol, foreground, background) in [
+            ("e", purple, theme::DEL_BG),
+            ("e", purple, theme::ADD_BG),
+            ("o", theme::GREEN, theme::DEL_EMPH),
+            ("n", theme::GREEN, theme::ADD_EMPH),
+            ("R", comment, theme::BG),
+        ] {
+            assert!(buffer.content.iter().any(|cell| {
+                cell.symbol() == symbol && cell.fg == foreground && cell.bg == background
+            }), "split={split}: missing {symbol:?} with foreground {foreground:?} and background {background:?}");
+        }
+    }
+}
+
+#[test]
 fn cached_syntax_unicode_gutters_and_stale_loads() {
     let mut app = fixture();
     assert!(app

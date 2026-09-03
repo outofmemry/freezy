@@ -10,6 +10,14 @@ inline emphasis, current-line highlighting, Unicode-safe wrapping, and optional
 line numbers and hunk metadata. File search and help use keyboard-accessible
 modals. Every changed file remains available in the sidebar.
 
+Syntax highlighting uses the bundled [two-face grammar collection](https://docs.rs/two-face/latest/two_face/syntax/),
+curated by `bat`: JavaScript/JSX, TypeScript/TSX (including `.mjs`, `.cjs`, `.mts`,
+and `.cts`), Python, Rust, Go, Java, C/C++, C#, Ruby, PHP, Swift, Kotlin, Dart,
+Vue, Svelte, HTML/CSS, SQL, shell, and many more. It recognizes filenames such as
+`Dockerfile`, `Makefile`, and `.env.local`, compound extensions, and shebangs when
+the first source line is available. Unsupported formats remain readable as plain
+text. No runtime grammar downloads or language servers are needed.
+
 ## Run
 
 ```bash
