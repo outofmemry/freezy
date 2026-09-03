@@ -4,21 +4,17 @@ pub mod chrome;
 pub mod diff;
 pub mod sidebar;
 pub mod syntax;
+pub mod window;
 
-use ratatui::{
-    layout::{Constraint, Layout, Rect},
-    style::Style,
-    widgets::{Block, Borders},
-};
+pub use window::Window;
 
-use crate::{
-    app::App,
-    theme::{BG, BORDER, PANEL},
-};
+use ratatui::layout::{Constraint, Layout, Rect};
+
+use crate::{app::App, theme::BG};
 
 pub fn render(frame: &mut ratatui::Frame, app: &mut App) {
     let area = frame.area();
-    frame.render_widget(Block::default().style(Style::default().bg(BG)), area);
+    Window::default().background(BG).render(frame, area);
     app.layout = Default::default();
     let shell = Layout::vertical([
         Constraint::Length(u16::from(app.show_menu_bar)),
@@ -47,15 +43,8 @@ pub fn render(frame: &mut ratatui::Frame, app: &mut App) {
     if side_width > 0 {
         sidebar::render_sidebar(frame, app, columns[0]);
     }
-    let block = Block::default()
-        .borders(Borders::LEFT | Borders::RIGHT)
-        .border_style(Style::default().fg(BORDER))
-        .style(Style::default().bg(PANEL));
-    let review = block.inner(columns[1]);
-    frame.render_widget(block, columns[1]);
-    app.layout.diff = review;
     app.layout.ruler = columns[2];
-    diff::render_diff(frame, app, review);
+    diff::render_diff(frame, app, columns[1]);
     chrome::render_ruler(frame, app, columns[2]);
     if app.searching {
         chrome::render_search_popup(frame, app, area);

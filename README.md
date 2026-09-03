@@ -46,6 +46,25 @@ The Agent and Extensions menus describe Freezy's capabilities; they do not
 implement Hunk's agent-note system or load Hunk extensions. The theme is fixed
 to the user's reference, Catppuccin Mocha.
 
+## Shared UI component
+
+`ui::Window` in `src/ui/window.rs` is the common shell for the sidebar, diff
+viewer, menu bar, overview ruler, dropdowns, and dialogs. It owns the base
+background, border styling, padding, and optional overlay clearing. Views use
+composition: render a Window, then draw their content in the returned rectangle.
+
+```rust
+let body = Window::default()
+    .borders(Borders::ALL)
+    .padding(Padding::vertical(1))
+    .overlay() // Use only for floating windows over existing content.
+    .render(frame, area);
+frame.render_widget(Paragraph::new("Window content"), body);
+```
+
+Change shared frame defaults in `Window::default()` and palette colors in
+`src/theme.rs`. Content-specific styles such as diff highlights remain in their views.
+
 ## Performance and checks
 
 Git runs in-process through libgit2 on background threads. Syntax highlighting

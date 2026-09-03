@@ -89,6 +89,45 @@ fn press(app: &mut App, code: KeyCode) {
 }
 
 #[test]
+fn shared_window_frames_content_and_clears_only_its_overlay() {
+    use ratatui::{
+        layout::Rect,
+        widgets::{Borders, Padding, Paragraph},
+    };
+    use ui::Window;
+
+    let mut terminal = Terminal::new(TestBackend::new(20, 12)).unwrap();
+    terminal
+        .draw(|frame| {
+            let area = frame.area();
+            frame.render_widget(Paragraph::new(vec!["x".repeat(20); 12].join("\n")), area);
+            assert_eq!(Window::default().render(frame, area), area);
+            let body = Window::default()
+                .borders(Borders::ALL)
+                .padding(Padding::vertical(1))
+                .background(theme::BG)
+                .overlay()
+                .render(frame, Rect::new(2, 2, 12, 8));
+            assert_eq!(body, Rect::new(3, 4, 10, 4));
+            frame.render_widget(Paragraph::new("content"), body);
+
+            // Clip partially off-screen windows before calculating their content area.
+            let clipped = Window::default().render(frame, Rect::new(18, 10, 8, 8));
+            assert_eq!(clipped, Rect::new(18, 10, 2, 2));
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    assert_eq!(buffer[(0, 0)].symbol(), "x");
+    assert_eq!(buffer[(0, 0)].bg, theme::PANEL);
+    assert_eq!(buffer[(2, 2)].symbol(), "┌");
+    assert_eq!(buffer[(2, 2)].fg, theme::BORDER);
+    assert_eq!(buffer[(3, 4)].symbol(), "c");
+    assert_eq!(buffer[(3, 5)].symbol(), " ");
+    assert_eq!(buffer[(3, 5)].bg, theme::BG);
+    assert_eq!(buffer[(1, 5)].symbol(), "x");
+}
+
+#[test]
 fn hunk_layout_controls_and_rendered_navigation() {
     let mut app = fixture();
     let buffer = draw(&mut app, 160, 46);

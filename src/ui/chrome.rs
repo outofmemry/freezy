@@ -5,13 +5,15 @@ use ratatui::{
     layout::{Alignment, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Borders, Padding, Paragraph},
 };
 use unicode_width::UnicodeWidthStr;
 
+use super::Window;
+
 use crate::{
     app::App,
-    theme::{clipped, ACCENT, BORDER, GREEN, MUTED, PANEL, PANEL_ALT, SEL_BG, TEXT},
+    theme::{clipped, ACCENT, GREEN, MUTED, PANEL, PANEL_ALT, SEL_BG, TEXT},
 };
 
 pub const MENUS: [&str; 6] = ["File", "View", "Navigate", "Agent", "Extensions", "Help"];
@@ -94,7 +96,7 @@ pub fn menu_entries(app: &App, menu: usize) -> Vec<MenuEntry> {
 }
 
 pub fn render_titlebar(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
-    frame.render_widget(Block::default().style(Style::default().bg(PANEL_ALT)), area);
+    let area = Window::default().background(PANEL_ALT).render(frame, area);
     let mut x = area.x;
     for (i, label) in MENUS.iter().enumerate() {
         let width = (label.len() as u16 + 2).min(area.right().saturating_sub(x));
@@ -141,21 +143,16 @@ pub fn render_titlebar(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
 }
 
 pub fn render_ruler(frame: &mut ratatui::Frame, app: &App, area: Rect) {
-    frame.render_widget(Block::default().style(Style::default().bg(PANEL)), area);
+    let area = Window::default().render(frame, area);
     for (y, hunk) in app
         .ruler_marks(area.height as usize)
         .into_iter()
         .enumerate()
     {
         if let Some(hunk) = hunk {
-            frame.render_widget(
-                Block::default().style(Style::default().bg(if hunk == app.hunk_idx {
-                    ACCENT
-                } else {
-                    GREEN
-                })),
-                Rect::new(area.x, area.y + y as u16, area.width, 1),
-            );
+            Window::default()
+                .background(if hunk == app.hunk_idx { ACCENT } else { GREEN })
+                .render(frame, Rect::new(area.x, area.y + y as u16, area.width, 1));
         }
     }
 }
@@ -169,20 +166,11 @@ fn modal(frame: &mut ratatui::Frame, area: Rect, width: u16, height: u16, title:
         width,
         height,
     );
-    frame.render_widget(Clear, rect);
-    frame.render_widget(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(BORDER))
-            .style(Style::default().bg(PANEL)),
-        rect,
-    );
-    let inside = Rect::new(
-        rect.x + u16::from(width > 0),
-        rect.y + 2.min(height),
-        width.saturating_sub(2),
-        height.saturating_sub(4),
-    );
+    let inside = Window::default()
+        .borders(Borders::ALL)
+        .padding(Padding::vertical(1))
+        .overlay()
+        .render(frame, rect);
     let close_width = 7.min(inside.width);
     frame.render_widget(
         Paragraph::new(format!(
@@ -360,13 +348,10 @@ pub fn render_menu(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
         width,
         (entries.len() as u16 + 2).min(area.height.saturating_sub(1)),
     );
-    frame.render_widget(Clear, rect);
-    let block = Block::default()
+    app.layout.menu_items = Window::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(BORDER))
-        .style(Style::default().bg(PANEL));
-    app.layout.menu_items = block.inner(rect);
-    frame.render_widget(block, rect);
+        .overlay()
+        .render(frame, rect);
     let lines = entries
         .iter()
         .enumerate()

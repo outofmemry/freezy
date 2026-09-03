@@ -8,6 +8,8 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
+use super::Window;
+
 use crate::{
     app::App,
     model::{kind_color, stats_label},
@@ -15,6 +17,7 @@ use crate::{
 };
 
 pub fn render_sidebar(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
+    let area = Window::default().render(frame, area);
     let sections = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(0),

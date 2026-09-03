@@ -4,9 +4,11 @@ use ratatui::{
     layout::{Alignment, Rect},
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Paragraph},
+    widgets::{Borders, Paragraph},
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+use super::Window;
 
 use crate::{
     app::App,
@@ -471,7 +473,10 @@ fn prepare(app: &mut App, area: Rect) {
 }
 
 pub fn render_diff(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
-    frame.render_widget(Block::default().style(Style::default().bg(PANEL)), area);
+    let area = Window::default()
+        .borders(Borders::LEFT | Borders::RIGHT)
+        .render(frame, area);
+    app.layout.diff = area;
     if app.loading_diff
         || app.scanning
         || app.diff_lines.is_empty()
