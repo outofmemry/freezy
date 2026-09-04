@@ -3,29 +3,34 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use git2::{Diff, DiffOptions, Patch, Repository, Status, StatusOptions};
 
 use crate::core::model::{DKind, DLine, FileEntry};
 
-/// Repo paths barely change — cache 2s so per-file diffs skip readdir.
+/// Repo paths barely change — cache 30s so per-file diffs skip readdir.
+/// Refresh loop is 2s; TTL must be >> refresh or cache never hits.
 type Repos = Vec<(String, PathBuf)>;
-static REPOS_CACHE: Mutex<Option<(PathBuf, Instant, Repos)>> = Mutex::new(None);
-const REPOS_TTL: Duration = Duration::from_secs(2);
+static REPOS_CACHE: Mutex<Option<(PathBuf, Instant, Arc<Repos>)>> = Mutex::new(None);
+const REPOS_TTL: Duration = Duration::from_secs(30);
 
 pub fn discover_repos(root: &Path) -> Vec<(String, PathBuf)> {
-    if let Ok(cache) = REPOS_CACHE.lock() {
-        if let Some((p, at, repos)) = cache.as_ref() {
-            if p == root && at.elapsed() < REPOS_TTL {
-                return repos.clone();
-            }
-        }
+    let hit: Option<Arc<Repos>> = {
+        let guard = REPOS_CACHE.lock().unwrap_or_else(|p| p.into_inner());
+        guard
+            .as_ref()
+            .filter(|(p, at, _)| p == root && at.elapsed() < REPOS_TTL)
+            .map(|(_, _, repos)| Arc::clone(repos))
+    };
+    if let Some(repos) = hit {
+        return repos.as_ref().clone();
     }
     let repos = discover_inner(root);
-    if let Ok(mut cache) = REPOS_CACHE.lock() {
-        *cache = Some((root.to_path_buf(), Instant::now(), repos.clone()));
+    {
+        let mut guard = REPOS_CACHE.lock().unwrap_or_else(|p| p.into_inner());
+        *guard = Some((root.to_path_buf(), Instant::now(), Arc::new(repos.clone())));
     }
     repos
 }
@@ -150,14 +155,22 @@ fn scan_repo(name: String, dir: PathBuf) -> Vec<FileEntry> {
 pub fn scan_all_files(root: &Path) -> Vec<FileEntry> {
     let mut all = vec![];
     let repos = discover_repos(root);
+    /// Bound blocking threads regardless of sibling count.
+    const MAX_SCAN_THREADS: usize = 8;
     if repos.len() > 4 {
-        // Many repos: fan out over blocking threads.
+        // Many repos: chunk work over at most MAX_SCAN_THREADS threads.
+        let n_threads = repos.len().min(MAX_SCAN_THREADS);
+        let chunk = repos.len().div_ceil(n_threads);
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::scope(|s| {
-            for (name, dir) in &repos {
+            for batch in repos.chunks(chunk) {
                 let tx = tx.clone();
                 s.spawn(move || {
-                    let _ = tx.send(scan_repo(name.clone(), dir.clone()));
+                    let mut buf = Vec::new();
+                    for (name, dir) in batch {
+                        buf.extend(scan_repo(name.clone(), dir.clone()));
+                    }
+                    let _ = tx.send(buf);
                 });
             }
         });
@@ -180,6 +193,11 @@ fn push_patch_lines(diff: &Diff, lines: &mut Vec<DLine>, hunks: &mut Vec<usize>)
             Ok(Some(p)) => p,
             _ => continue,
         };
+        // Binary / mode-only deltas have no hunks — emit nothing so the
+        // caller treats them as "no text diff". Do not push a lone File header.
+        if patch.num_hunks() == 0 {
+            continue;
+        }
         let delta = patch.delta();
         let disp = delta
             .new_file()
@@ -259,13 +277,32 @@ fn push_patch_lines(diff: &Diff, lines: &mut Vec<DLine>, hunks: &mut Vec<usize>)
 }
 
 /// Full unified diff for one file, in-process. No subprocess, ~1ms.
-fn git_diff_lines(dir: &Path, rel: &str) -> (Vec<DLine>, Vec<usize>) {
+/// Returns `(compact_lines, hunks, first_line_body)` where `first_line_body`
+/// is line 1 sans prefix, from the full-context diff (compact often omits it).
+fn git_diff_lines(dir: &Path, rel: &str) -> (Vec<DLine>, Vec<usize>, Option<String>) {
     let (lines, hunks) = git_diff_lines_with_context(dir, rel, 3);
     if hunks.is_empty() {
-        return (lines, hunks);
+        return (lines, hunks, None);
     }
     let (full, _) = git_diff_lines_with_context(dir, rel, u32::MAX);
-    crate::core::model::with_context(&lines, &full).unwrap_or((lines, hunks))
+    let first = first_body_from(&full).or_else(|| first_body_from(&lines));
+    let (merged, merged_hunks) =
+        crate::core::model::with_context(&lines, &full).unwrap_or((lines, hunks));
+    (merged, merged_hunks, first)
+}
+
+/// Line-1 body for shebang detection, sans diff prefix.
+fn first_body_from(lines: &[DLine]) -> Option<String> {
+    lines
+        .iter()
+        .find(|l| l.new_no == Some(1))
+        .or_else(|| lines.iter().find(|l| l.old_no == Some(1)))
+        .map(|l| {
+            l.text
+                .strip_prefix(['+', '-', ' '])
+                .unwrap_or(&l.text)
+                .to_owned()
+        })
 }
 
 fn git_diff_lines_with_context(dir: &Path, rel: &str, context: u32) -> (Vec<DLine>, Vec<usize>) {
@@ -283,7 +320,8 @@ fn git_diff_lines_with_context(dir: &Path, rel: &str, context: u32) -> (Vec<DLin
         push_patch_lines(&diff, &mut lines, &mut hunks);
     }
     // Staged-only fallback (nothing in workdir diff).
-    if lines.is_empty() {
+    // Check hunks, not lines: binary/mode-only yields headers with no hunks.
+    if hunks.is_empty() {
         let mut opts2 = DiffOptions::new();
         opts2
             .pathspec(rel)
@@ -296,7 +334,7 @@ fn git_diff_lines_with_context(dir: &Path, rel: &str, context: u32) -> (Vec<DLin
     (lines, hunks)
 }
 
-pub fn load_diff_text(root: &Path, f: &FileEntry) -> (Vec<DLine>, Vec<usize>) {
+pub fn load_diff_text(root: &Path, f: &FileEntry) -> (Vec<DLine>, Vec<usize>, Option<String>) {
     let repos = discover_repos(root);
     let dir = repos
         .iter()
@@ -306,16 +344,29 @@ pub fn load_diff_text(root: &Path, f: &FileEntry) -> (Vec<DLine>, Vec<usize>) {
     if f.kind == 'U' {
         match std::fs::read_to_string(dir.join(&f.rel)) {
             Ok(s) => {
-                let mut lines = vec![DLine::plain(format!("new file: {}", f.path), DKind::File)];
+                let n = s.lines().count() as u32;
+                let mut lines = vec![
+                    DLine::plain(format!("new file: {}", f.path), DKind::File),
+                    // Real Hunk so hunks point at Hunk kind (not File).
+                    DLine::plain(
+                        if n == 0 {
+                            "@@ -0,0 +0,0 @@".to_owned()
+                        } else {
+                            format!("@@ -0,0 +1,{n} @@")
+                        },
+                        DKind::Hunk,
+                    ),
+                ];
                 lines.extend(s.lines().enumerate().map(|(i, l)| DLine {
                     text: format!("+{l}"),
                     kind: DKind::Add,
                     old_no: None,
                     new_no: Some(i as u32 + 1),
                 }));
-                (lines, vec![0])
+                let first = s.lines().next().map(|s| s.to_owned());
+                (lines, vec![1], first)
             }
-            Err(_) => (vec![], vec![]),
+            Err(_) => (vec![], vec![], None),
         }
     } else {
         git_diff_lines(&dir, &f.rel)

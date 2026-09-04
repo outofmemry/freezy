@@ -51,7 +51,7 @@ fn git_context_gaps_expand_and_collapse_in_both_views() {
         .into_iter()
         .find(|f| f.rel == "review.rs")
         .unwrap();
-    let (lines, hunks) = crate::git::load_diff_text(&dir.0, &entry);
+    let (lines, hunks, _) = crate::git::load_diff_text(&dir.0, &entry);
     assert_eq!(hunks.len(), 2);
     assert_eq!(lines[hunks[1]].text, "@@ -68,6 +74,43 @@");
     let gaps: Vec<_> = lines
@@ -96,8 +96,16 @@ fn git_context_gaps_expand_and_collapse_in_both_views() {
     for split in [true, false] {
         let mut app = App::new();
         app.set_files(0, vec![entry.clone()]);
-        let syntax = crate::ui::syntax::highlight(&lines, &entry.rel);
-        app.set_diff(0, entry.path.clone(), lines.clone(), hunks.clone(), syntax);
+        let syntax = crate::ui::syntax::highlight(&lines, &entry.rel, None);
+        app.set_diff(
+            0,
+            entry.path.clone(),
+            lines.clone(),
+            hunks.clone(),
+            syntax,
+            entry.rel.clone(),
+            entry.kind,
+        );
         app.side_by_side = split;
         app.auto_layout = false;
         draw(&mut app, 160, 24);
@@ -113,7 +121,8 @@ fn git_context_gaps_expand_and_collapse_in_both_views() {
         assert!(text(&app).contains("Show 50 unchanged lines"));
         assert!(!text(&app).contains("line_050"));
         let marks = app.ruler_marks(60);
-        assert_eq!(marks[35], None); // hidden context isn't a changed hunk in the ruler
+        // Folded Gap+Ctx belongs to its hunk range so paint/click agree.
+        assert!(marks[35].is_some());
 
         press(&mut app, KeyCode::Char(']'));
         let label = app
@@ -168,9 +177,25 @@ fn git_context_gaps_expand_and_collapse_in_both_views() {
         draw(&mut app, 120, 24);
         assert!(text(&app).contains("line_001"));
         assert!(!text(&app).contains("line_050"));
-        app.set_diff(99, "stale".into(), vec![], vec![], vec![]);
+        app.set_diff(
+            99,
+            "stale".into(),
+            vec![],
+            vec![],
+            vec![],
+            String::new(),
+            'M',
+        );
         assert!(app.expanded_gaps.contains(&gaps[0]));
-        app.set_diff(0, entry.path.clone(), lines.clone(), hunks.clone(), vec![]);
+        app.set_diff(
+            0,
+            entry.path.clone(),
+            lines.clone(),
+            hunks.clone(),
+            vec![],
+            entry.rel.clone(),
+            entry.kind,
+        );
         assert!(app.expanded_gaps.is_empty());
     }
 
@@ -180,16 +205,24 @@ fn git_context_gaps_expand_and_collapse_in_both_views() {
     std::fs::write(&path, format!("{}\n", staged.join("\n"))).unwrap();
     index.add_path(Path::new("review.rs")).unwrap();
     index.write().unwrap();
-    let (trailing, _) = crate::git::load_diff_text(&dir.0, &entry);
+    let (trailing, _, _) = crate::git::load_diff_text(&dir.0, &entry);
     assert!(trailing
         .iter()
         .any(|l| l.kind == DKind::Gap && l.text == "56 unchanged lines"));
     assert_eq!(trailing.last().unwrap().new_no, Some(73));
     let mut tail_app = App::new();
     tail_app.set_files(0, vec![entry.clone()]);
-    let (trailing, trailing_hunks) = crate::git::load_diff_text(&dir.0, &entry);
-    let syntax = crate::ui::syntax::highlight(&trailing, &entry.rel);
-    tail_app.set_diff(0, entry.path.clone(), trailing, trailing_hunks, syntax);
+    let (trailing, trailing_hunks, _) = crate::git::load_diff_text(&dir.0, &entry);
+    let syntax = crate::ui::syntax::highlight(&trailing, &entry.rel, None);
+    tail_app.set_diff(
+        0,
+        entry.path.clone(),
+        trailing,
+        trailing_hunks,
+        syntax,
+        entry.rel.clone(),
+        entry.kind,
+    );
     draw(&mut tail_app, 160, 24);
     let tail_id = tail_app
         .diff_lines
@@ -219,11 +252,11 @@ fn git_context_gaps_expand_and_collapse_in_both_views() {
     )
     .unwrap();
     std::fs::write(&path, staged.join("\n")).unwrap();
-    let (no_newline, _) = crate::git::load_diff_text(&dir.0, &entry);
+    let (no_newline, _, _) = crate::git::load_diff_text(&dir.0, &entry);
     assert!(no_newline
         .iter()
         .any(|l| l.kind == DKind::Gap && l.text == "56 unchanged lines"));
     std::fs::remove_file(&path).unwrap();
-    let (deleted, _) = crate::git::load_diff_text(&dir.0, &entry);
+    let (deleted, _, _) = crate::git::load_diff_text(&dir.0, &entry);
     assert!(!deleted.iter().any(|l| l.kind == DKind::Gap));
 }

@@ -78,7 +78,8 @@ pub fn handle_mouse(
                 (mouse.row - app.layout.ruler.y) as f64 / app.layout.ruler.height.max(1) as f64,
             );
         } else if in_rect(&app.layout.diff, mouse.column, mouse.row) {
-            let row = app.rendered_scroll() + (mouse.row - app.layout.diff.y) as usize;
+            let base = app.clamped_rendered_scroll(app.layout.diff.height as usize);
+            let row = base + (mouse.row - app.layout.diff.y) as usize;
             if let Some((id, _)) = app.display.gaps.iter().find(|(_, rows)| rows.start == row) {
                 app.toggle_gap(*id);
             } else if app.display.code_rows.contains(&row) {

@@ -24,6 +24,7 @@ fn file_syntax<'a>(
     syntaxes: &'a SyntaxSet,
     filename: &str,
     lines: &[DLine],
+    first_line: Option<&str>,
 ) -> &'a SyntaxReference {
     let path = Path::new(filename);
     let basename = path
@@ -36,15 +37,18 @@ fn file_syntax<'a>(
     })
     .find_map(|name| syntaxes.find_syntax_by_extension(name))
     .or_else(|| {
-        // Use diff content: deleted files and repository-relative paths may not exist on disk.
-        let first_line = lines
+        // Prefer caller-provided line 1 (full-context diff); fallback to compact.
+        if let Some(s) = first_line {
+            return syntaxes.find_syntax_by_first_line(s);
+        }
+        let first = lines
             .iter()
             .find(|line| line.new_no == Some(1))
             .or_else(|| lines.iter().find(|line| line.old_no == Some(1)))?;
-        let body = first_line
+        let body = first
             .text
             .strip_prefix(['+', '-', ' '])
-            .unwrap_or(&first_line.text);
+            .unwrap_or(&first.text);
         syntaxes.find_syntax_by_first_line(body)
     })
     .unwrap_or_else(|| syntaxes.find_syntax_plain_text())
@@ -100,9 +104,14 @@ fn terminal_color(color: SyntaxColor) -> Color {
     }
 }
 
-pub fn highlight(lines: &[DLine], filename: &str) -> Vec<Line<'static>> {
+/// Returns per-source [old-side, new-side] tokens so split left uses `old` state.
+pub fn highlight(
+    lines: &[DLine],
+    filename: &str,
+    first_line: Option<&str>,
+) -> Vec<[Line<'static>; 2]> {
     let syntaxes = syntax_set();
-    let syntax = file_syntax(syntaxes, filename, lines);
+    let syntax = file_syntax(syntaxes, filename, lines, first_line);
     let mut old = HighlightLines::new(syntax, syntax_theme());
     let mut new = HighlightLines::new(syntax, syntax_theme());
     lines
@@ -113,25 +122,16 @@ pub fn highlight(lines: &[DLine], filename: &str) -> Vec<Line<'static>> {
                 .strip_prefix(['+', '-', ' '])
                 .unwrap_or(&line.text);
             if matches!(line.kind, DKind::File | DKind::Hunk | DKind::Gap) {
-                return Line::default();
+                return [Line::default(), Line::default()];
             }
-            let tokens = match line.kind {
-                DKind::Del => old.highlight_line(body, syntaxes),
-                DKind::Ctx => {
-                    let _ = old.highlight_line(body, syntaxes);
-                    new.highlight_line(body, syntaxes)
-                }
-                _ => new.highlight_line(body, syntaxes),
-            };
-            Line::from(
-                tokens
-                    .map(|tokens| {
-                        tokens
-                            .into_iter()
-                            .map(|(style, text)| {
+            let to_line = |r: Result<Vec<(syntect::highlighting::Style, &str)>, _>| {
+                Line::from(
+                    r.map(|t| {
+                        t.into_iter()
+                            .map(|(s, t)| {
                                 Span::styled(
-                                    text.to_owned(),
-                                    Style::default().fg(terminal_color(style.foreground)),
+                                    t.to_owned(),
+                                    Style::default().fg(terminal_color(s.foreground)),
                                 )
                             })
                             .collect::<Vec<_>>()
@@ -139,7 +139,18 @@ pub fn highlight(lines: &[DLine], filename: &str) -> Vec<Line<'static>> {
                     .unwrap_or_else(|_| {
                         vec![Span::styled(body.to_owned(), Style::default().fg(TEXT))]
                     }),
-            )
+                )
+            };
+            match line.kind {
+                DKind::Del => [to_line(old.highlight_line(body, syntaxes)), Line::default()],
+                DKind::Add => [Line::default(), to_line(new.highlight_line(body, syntaxes))],
+                // Advance both lexers independently so each side keeps its own state.
+                DKind::Ctx => [
+                    to_line(old.highlight_line(body, syntaxes)),
+                    to_line(new.highlight_line(body, syntaxes)),
+                ],
+                _ => [Line::default(), Line::default()],
+            }
         })
         .collect()
 }
@@ -197,7 +208,7 @@ mod tests {
             ("unknown.freezy-unknown", "Plain Text"),
         ] {
             assert_eq!(
-                file_syntax(syntaxes, filename, &[]).name,
+                file_syntax(syntaxes, filename, &[], None).name,
                 expected,
                 "{filename}"
             );
@@ -208,11 +219,11 @@ mod tests {
             DKind::Add,
         )];
         for extension in ["js", "jsx", "mjs", "cjs", "ts", "tsx", "mts", "cts"] {
-            let colored = highlight(&source, &format!("app.{extension}"));
-            assert_eq!(colored[0].to_string(), "const message = \"hello\";");
+            let colored = highlight(&source, &format!("app.{extension}"), None);
+            assert_eq!(colored[0][1].to_string(), "const message = \"hello\";");
             for (token, foreground) in [("const", MAGENTA), ("hello", GREEN)] {
                 assert!(
-                    colored[0].spans.iter().any(|span| {
+                    colored[0][1].spans.iter().any(|span| {
                         span.content.contains(token) && span.style.fg == Some(foreground)
                     }),
                     "{extension}: {token} must be colored"
@@ -234,18 +245,30 @@ mod tests {
                     new_no: (kind == DKind::Add).then_some(1),
                 };
                 assert_eq!(
-                    file_syntax(syntaxes, "bin/run", std::slice::from_ref(&line)).name,
+                    file_syntax(syntaxes, "bin/run", std::slice::from_ref(&line), None).name,
                     expected
                 );
                 line.old_no = line.old_no.map(|_| 50);
                 line.new_no = line.new_no.map(|_| 50);
-                assert_eq!(file_syntax(syntaxes, "bin/run", &[line]).name, "Plain Text");
+                assert_eq!(
+                    file_syntax(syntaxes, "bin/run", &[line.clone()], None).name,
+                    "Plain Text"
+                );
+                // line1 outside compact diff must still detect via threaded first_line
+                let body = line
+                    .text
+                    .strip_prefix(['+', '-', ' '])
+                    .unwrap_or(&line.text);
+                assert_eq!(
+                    file_syntax(syntaxes, "bin/run", std::slice::from_ref(&line), Some(body)).name,
+                    expected
+                );
             }
         }
 
-        let plain = highlight(&source, "unknown.freezy-unknown");
-        assert_eq!(plain[0].to_string(), "const message = \"hello\";");
-        assert!(plain[0]
+        let plain = highlight(&source, "unknown.freezy-unknown", None);
+        assert_eq!(plain[0][1].to_string(), "const message = \"hello\";");
+        assert!(plain[0][1]
             .spans
             .iter()
             .all(|span| span.style.fg == Some(TEXT)));

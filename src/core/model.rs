@@ -2,7 +2,7 @@
 
 use crate::utils::theme::{GREEN, RED, TEXT, YELLOW};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileEntry {
     pub path: String, // "repo/rel"
     pub repo: String,
@@ -12,7 +12,7 @@ pub struct FileEntry {
     pub deletions: u32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DKind {
     File,
     Hunk,
@@ -33,6 +33,11 @@ pub struct DLine {
 /// Keep Git's original hunk boundaries while retaining omitted context as folded rows.
 /// Reject mismatched snapshots: the worktree may change between the two Git reads.
 pub fn with_context(compact: &[DLine], full: &[DLine]) -> Option<(Vec<DLine>, Vec<usize>)> {
+    use std::collections::{HashMap, VecDeque};
+    #[inline]
+    fn line_key(l: &DLine) -> (DKind, Option<u32>, Option<u32>, &str) {
+        (l.kind, l.old_no, l.new_no, l.text.as_str())
+    }
     fn append_gap(out: &mut Vec<DLine>, context: &[&DLine]) -> Option<()> {
         if context.is_empty() {
             return Some(());
@@ -66,19 +71,33 @@ pub fn with_context(compact: &[DLine], full: &[DLine]) -> Option<(Vec<DLine>, Ve
     let mut out = Vec::new();
     let mut hunks = Vec::new();
     let mut cursor = 0;
-    for (index, line) in compact.iter().enumerate() {
+    // O(n) index: key -> ordered positions in `full`.
+    type LineKey<'a> = (DKind, Option<u32>, Option<u32>, &'a str);
+    let mut pos_index: HashMap<LineKey<'_>, VecDeque<usize>> =
+        HashMap::with_capacity(full.len() * 2);
+    for (i, l) in full.iter().enumerate() {
+        pos_index.entry(line_key(l)).or_default().push_back(i);
+    }
+    for (ci, line) in compact.iter().enumerate() {
         match line.kind {
             DKind::File => out.push(line.clone()),
             DKind::Hunk => {
-                let first = compact.get(index + 1)?;
-                let offset = full[cursor..].iter().position(|l| *l == first)?;
-                append_gap(&mut out, &full[cursor..cursor + offset])?;
-                cursor += offset;
+                let first = compact.get(ci + 1)?;
+                let q = pos_index.get_mut(&line_key(first))?;
+                while q.front().is_some_and(|&pos| pos < cursor) {
+                    q.pop_front();
+                }
+                let target = q.pop_front()?;
+                append_gap(&mut out, &full[cursor..target])?;
+                cursor = target;
                 hunks.push(out.len());
                 out.push(line.clone());
             }
             _ => {
-                if full.get(cursor).copied() != Some(line) {
+                if full
+                    .get(cursor)
+                    .is_none_or(|got| line_key(got) != line_key(line))
+                {
                     return None;
                 }
                 out.push(line.clone());
@@ -218,9 +237,8 @@ pub fn side_rows(lines: &[DLine], hunks: &[usize]) -> (Vec<SideRow>, Vec<(usize,
         }
         cursor = hend;
     }
-    for dl in &lines[cursor..] {
-        rows.push(SideRow::Full(dl.text.clone(), dl.kind));
-    }
+    // Route tail (incl. trailing `Gap`+context) through pairing so split folding works.
+    rows.extend(pair_hunk(&lines[cursor..], cursor));
     (rows, ranges)
 }
 

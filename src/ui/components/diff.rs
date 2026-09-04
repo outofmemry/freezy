@@ -59,10 +59,15 @@ fn background(kind: DKind) -> Color {
     }
 }
 
-fn code_spans(app: &App, cell: &Cell, peer: Option<&Cell>) -> Vec<Span<'static>> {
+fn code_spans(app: &App, cell: &Cell, peer: Option<&Cell>, is_old: bool) -> Vec<Span<'static>> {
     let emphasis = peer.map(|peer| emph_ranges(&cell.body, &peer.body));
     let fallback = Line::styled(cell.body.clone(), Style::default().fg(TEXT));
-    let syntax = app.syntax.get(cell.source).unwrap_or(&fallback);
+    // Per-side lexer state: left uses old, right/stack-new uses new.
+    let syntax = app
+        .syntax
+        .get(cell.source)
+        .map(|pair| if is_old { &pair[0] } else { &pair[1] })
+        .unwrap_or(&fallback);
     let mut spans = Vec::new();
     let mut column = 0;
     let mut index = 0;
@@ -79,15 +84,21 @@ fn code_spans(app: &App, cell: &Cell, peer: Option<&Cell>) -> Vec<Span<'static>>
                 background(cell.kind)
             };
             let style = token.style.bg(bg);
-            let text = if ch == '\t' {
-                " ".repeat(4 - column % 4)
-            } else if ch.is_control() {
-                "�".into()
+            if ch == '\t' || ch.is_control() {
+                let text = if ch == '\t' {
+                    " ".repeat(4 - column % 4)
+                } else {
+                    "�".into()
+                };
+                column += text.width();
+                push_span(&mut spans, &text, style);
             } else {
-                ch.to_string()
-            };
-            column += text.width();
-            push_span(&mut spans, &text, style);
+                // Hot path: no per-char `String` alloc.
+                let mut buf = [0u8; 4];
+                let text = ch.encode_utf8(&mut buf);
+                column += text.width();
+                push_span(&mut spans, text, style);
+            }
             index += 1;
         }
     }
@@ -120,16 +131,24 @@ fn wrap_spans(
                 continue;
             }
             column = end;
-            if used + size > width {
+            if used > 0 && used + size > width {
                 if !wrap {
                     return rows;
                 }
                 rows.push(Vec::new());
                 used = 0;
             }
-            if size <= width {
+            if size == 0 || size <= width {
                 push_span(rows.last_mut().unwrap(), &ch.to_string(), span.style);
                 used += size;
+            } else if used == 0 {
+                // Wide glyph can never fit: never emit blank, respect `clipped` contract.
+                push_span(
+                    rows.last_mut().unwrap(),
+                    &clipped(&ch.to_string(), width),
+                    span.style,
+                );
+                used = width;
             }
         }
     }
@@ -143,6 +162,7 @@ fn cell_lines(
     width: usize,
     digits: usize,
     stack: bool,
+    is_old: bool,
 ) -> Vec<Line<'static>> {
     let kind = cell.map_or(DKind::Ctx, |c| c.kind);
     let bg = background(kind);
@@ -189,7 +209,7 @@ fn cell_lines(
     };
     let gutter = clipped(&gutter, gutter_width);
     let spans = cell
-        .map(|cell| code_spans(app, cell, peer))
+        .map(|cell| code_spans(app, cell, peer, is_old))
         .unwrap_or_default();
     let chunks = if code_width == 0 {
         vec![vec![]]
@@ -288,22 +308,15 @@ fn prepare(app: &mut App, area: Rect) {
     view.lines
         .push(Line::styled("", Style::default().bg(PANEL)));
 
-    let selected = app.files.iter().find(|f| f.path == app.diff_title);
-    let filename = selected
-        .as_ref()
-        .map_or(app.diff_title.as_str(), |f| f.rel.as_str());
-    let suffix = selected.as_ref().map_or("", |f| match f.kind {
+    // Cached in `set_diff`; `prepare` does no scans here.
+    let filename = app.diff_rel.as_str();
+    let suffix = match app.diff_kind {
         'U' => " (untracked)",
         'A' => " (added)",
         'D' => " (deleted)",
         _ => "",
-    });
-    let (adds, dels) = app.diff_lines.iter().fold((0, 0), |(a, d), line| {
-        (
-            a + usize::from(line.kind == DKind::Add),
-            d + usize::from(line.kind == DKind::Del),
-        )
-    });
+    };
+    let (adds, dels) = (app.diff_adds, app.diff_dels);
     let stats = format!("+{adds} -{dels}  ");
     let name = clipped(
         filename,
@@ -324,15 +337,7 @@ fn prepare(app: &mut App, area: Rect) {
         ])
         .style(Style::default().bg(PANEL)),
     );
-    let digits = app
-        .diff_lines
-        .iter()
-        .flat_map(|l| [l.old_no, l.new_no])
-        .flatten()
-        .max()
-        .unwrap_or(1)
-        .to_string()
-        .len();
+    let digits = app.diff_digits;
     let untracked = app
         .hunks
         .first()
@@ -345,7 +350,8 @@ fn prepare(app: &mut App, area: Rect) {
             app.hunk_headers,
         );
     }
-    let code_width = width.saturating_sub(2);
+    // `area` is already columns[0] after the 2-col ruler split; do not subtract again.
+    let code_width = width;
     let mut folded = false;
     if split {
         let left_width = code_width / 2;
@@ -369,17 +375,35 @@ fn prepare(app: &mut App, area: Rect) {
                         add_gap(&mut view, id, text, width, !folded);
                     }
                 }
-                SideRow::Full(text, _) => view
-                    .lines
-                    .push(Line::styled(text.clone(), Style::default().fg(MUTED))),
+                SideRow::Full(text, _) => {
+                    if folded {
+                        continue;
+                    }
+                    view.lines
+                        .push(Line::styled(text.clone(), Style::default().fg(MUTED)));
+                }
                 SideRow::Pair(old, new) => {
                     if folded {
                         continue;
                     }
-                    let left =
-                        cell_lines(app, old.as_ref(), new.as_ref(), left_width, digits, false);
-                    let right =
-                        cell_lines(app, new.as_ref(), old.as_ref(), right_width, digits, false);
+                    let left = cell_lines(
+                        app,
+                        old.as_ref(),
+                        new.as_ref(),
+                        left_width,
+                        digits,
+                        false,
+                        true,
+                    );
+                    let right = cell_lines(
+                        app,
+                        new.as_ref(),
+                        old.as_ref(),
+                        right_width,
+                        digits,
+                        false,
+                        false,
+                    );
                     for i in 0..left.len().max(right.len()) {
                         let mut spans = left.get(i).map(|l| l.spans.clone()).unwrap_or_else(|| {
                             vec![Span::styled(
@@ -447,8 +471,16 @@ fn prepare(app: &mut App, area: Rect) {
                             .unwrap_or(&line.text)
                             .into(),
                     };
-                    let lines =
-                        cell_lines(app, Some(&cell), peers[source], code_width, digits, true);
+                    let is_old = cell.kind == DKind::Del;
+                    let lines = cell_lines(
+                        app,
+                        Some(&cell),
+                        peers[source],
+                        code_width,
+                        digits,
+                        true,
+                        is_old,
+                    );
                     view.code_rows
                         .extend(view.lines.len()..view.lines.len() + lines.len());
                     view.code_columns
@@ -545,7 +577,7 @@ pub fn render_diff(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
         return;
     }
     prepare(app, area);
-    let max_scroll = app.display.lines.len().saturating_sub(area.height as usize);
+    let max_scroll = app.max_display_scroll(area.height as usize);
     app.diff_scroll = app.diff_scroll.min(max_scroll);
     app.anim_scroll = app.anim_scroll.min(max_scroll as f64);
     let start = app.rendered_scroll().min(max_scroll);

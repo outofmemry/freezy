@@ -27,16 +27,25 @@ fn empty_split_cells_stay_clean_including_wrapped_and_selected_rows() {
                         line
                     })
                     .collect();
-                app.set_diff(0, "freezy/src/main.rs".into(), lines, vec![1], vec![]);
+                app.set_diff(
+                    0,
+                    "freezy/src/main.rs".into(),
+                    lines,
+                    vec![1],
+                    vec![],
+                    "src/main.rs".into(),
+                    'M',
+                );
                 draw(&mut app, 160, 30);
                 app.cursor_row = 0;
                 let baseline = draw(&mut app, 160, 30);
                 let area = app.layout.diff;
-                let middle = area.x + (area.width - 2) / 2;
+                // `area` is already columns[0] after ruler split; code_width == width.
+                let middle = area.x + area.width / 2;
                 let (empty, changed_x) = if kind == DKind::Add {
                     (area.x..middle, middle + 8)
                 } else {
-                    (middle..area.right() - 2, area.x + 8)
+                    (middle..area.right(), area.x + 8)
                 };
                 let rows = app.display.code_rows.clone();
                 assert!(rows.len() > 3, "the changed line must wrap");
@@ -130,10 +139,15 @@ fn tsx_syntax_colors_survive_split_stack_and_change_backgrounds() {
             new_no: (kind != DKind::Del).then_some(number),
         }),
     );
-    let syntax = crate::ui::syntax::highlight(&lines, "src/Widget.tsx");
+    let syntax = crate::ui::syntax::highlight(&lines, "src/Widget.tsx", None);
     assert_eq!(syntax.len(), lines.len());
     for (source, highlighted) in lines.iter().zip(&syntax).skip(2) {
-        assert_eq!(highlighted.to_string(), source.text[1..]);
+        // Del lives on old side [0], Add/Ctx on new side [1] (Ctx has both).
+        let text = match source.kind {
+            DKind::Del => highlighted[0].to_string(),
+            _ => highlighted[1].to_string(),
+        };
+        assert_eq!(text, source.text[1..]);
     }
     for (token, color) in [
         ("import", purple),
@@ -146,6 +160,7 @@ fn tsx_syntax_colors_survive_split_stack_and_change_backgrounds() {
         assert!(
             syntax
                 .iter()
+                .flat_map(|line| [&line[0], &line[1]])
                 .flat_map(|line| &line.spans)
                 .any(|span| { span.content.contains(token) && span.style.fg == Some(color) }),
             "TSX token {token:?} must have its semantic foreground"
@@ -155,7 +170,15 @@ fn tsx_syntax_colors_survive_split_stack_and_change_backgrounds() {
         let mut app = App::new();
         let entry = file("freezy", "src/Widget.tsx");
         app.set_files(0, vec![entry.clone()]);
-        app.set_diff(0, entry.path, lines.clone(), vec![1], syntax.clone());
+        app.set_diff(
+            0,
+            entry.path,
+            lines.clone(),
+            vec![1],
+            syntax.clone(),
+            "src/Widget.tsx".into(),
+            'M',
+        );
         app.side_by_side = split;
         app.auto_layout = false;
         let buffer = draw(&mut app, 220, 26);
@@ -178,14 +201,24 @@ fn cached_syntax_unicode_gutters_and_stale_loads() {
     assert!(app
         .syntax
         .iter()
+        .flat_map(|l| [&l[0], &l[1]])
         .flat_map(|l| &l.spans)
         .any(|s| s.style.fg == Some(theme::MAGENTA)));
     let original = app.diff_title.clone();
-    app.set_diff(99, "stale".into(), vec![], vec![], vec![]);
+    app.set_diff(
+        99,
+        "stale".into(),
+        vec![],
+        vec![],
+        vec![],
+        String::new(),
+        'M',
+    );
     assert_eq!(app.diff_title, original);
     app.files[0].kind = 'U';
     let lines = vec![
         DLine::plain("new file".into(), DKind::File),
+        DLine::plain("@@ -0,0 +1,1 @@".into(), DKind::Hunk),
         DLine {
             text: "+/target".into(),
             kind: DKind::Add,
@@ -193,8 +226,16 @@ fn cached_syntax_unicode_gutters_and_stale_loads() {
             new_no: Some(1),
         },
     ];
-    let syntax = crate::ui::syntax::highlight(&lines, ".gitignore");
-    app.set_diff(0, original, lines, vec![0], syntax);
+    let syntax = crate::ui::syntax::highlight(&lines, ".gitignore", None);
+    app.set_diff(
+        0,
+        original.clone(),
+        lines,
+        vec![1],
+        syntax,
+        ".gitignore".into(),
+        'U',
+    );
     let text = screen(&draw(&mut app, 160, 46));
     assert!(text.contains("▌1 + /target"));
     assert!(text.contains("@@ -0,0 +1,1 @@"));

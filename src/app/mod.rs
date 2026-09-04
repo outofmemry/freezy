@@ -10,7 +10,15 @@ use crate::core::model::{side_rows, DKind, DLine, FileEntry, SideRow};
 
 pub enum Msg {
     Files(u64, Vec<FileEntry>),
-    Diff(u64, String, Vec<DLine>, Vec<usize>, Vec<Line<'static>>),
+    Diff(
+        u64,
+        String,
+        Vec<DLine>,
+        Vec<usize>,
+        Vec<[Line<'static>; 2]>,
+        String,
+        char,
+    ),
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -53,10 +61,12 @@ pub struct App {
     /// Cached fuzzy matches (indices into `files`); recomputed only when
     /// files or query change — never per frame.
     pub filtered: Vec<usize>,
+    /// Lowercase cache parallel to `files`; rebuilt in `set_files`.
+    pub path_lower: Vec<String>,
     pub searching: bool,
     pub selected: usize, // index into visible()
     pub diff_lines: Vec<DLine>,
-    pub syntax: Vec<Line<'static>>,
+    pub syntax: Vec<[Line<'static>; 2]>,
     pub hunks: Vec<usize>, // indices into diff_lines
     pub expanded_gaps: HashSet<usize>,
     pub gap_anchor: Option<(usize, usize)>, // source gap, screen row to preserve
@@ -65,7 +75,16 @@ pub struct App {
     pub cursor_row: usize,
     pub scroll_x: usize,  // horizontal scroll (columns)
     pub anim_scroll: f64, // eased render scroll — glides toward target
+    /// Entry the current diff was requested for; dedupes `r` vs `Msg::Files`.
+    pub diff_source: Option<FileEntry>,
+    /// In-flight diff worker (aborted on next `load_selected`).
+    pub diff_task: Option<tokio::task::JoinHandle<()>>,
     pub diff_title: String,
+    pub diff_rel: String,
+    pub diff_kind: char,
+    pub diff_adds: usize,
+    pub diff_dels: usize,
+    pub diff_digits: usize,
     pub loading_diff: bool,
     pub side_by_side: bool,
     pub auto_layout: bool,
@@ -108,7 +127,14 @@ impl App {
             cursor_row: 0,
             scroll_x: 0,
             anim_scroll: 0.0,
+            diff_source: None,
+            diff_task: None,
             diff_title: String::from("—"),
+            diff_rel: String::from("—"),
+            diff_kind: 'M',
+            diff_adds: 0,
+            diff_dels: 0,
+            diff_digits: 1,
             loading_diff: false,
             side_by_side: true,
             auto_layout: true,
@@ -124,6 +150,7 @@ impl App {
             matcher: SkimMatcherV2::default(),
             last_refresh: Instant::now(),
             frame: 0,
+            path_lower: vec![],
             side_cache: (vec![], vec![]),
             layout: LayoutCache::default(),
             display: Default::default(),
@@ -148,7 +175,7 @@ impl App {
         for (i, f) in self.files.iter().enumerate() {
             if let Some(s) = self.matcher.fuzzy_match(&f.path, &self.query) {
                 scored.push((s, i));
-            } else if f.path.to_lowercase().contains(&qlower) {
+            } else if self.path_lower.get(i).is_some_and(|l| l.contains(&qlower)) {
                 scored.push((0, i));
             }
         }
@@ -164,16 +191,33 @@ impl App {
         self.filtered.clone()
     }
 
+    /// Allocation-free length for hot paths.
+    pub fn visible_len(&self) -> usize {
+        if self.query.is_empty() {
+            self.files.len()
+        } else {
+            self.filtered.len()
+        }
+    }
+
+    /// Allocation-free index lookup for hot paths.
+    pub fn visible_index(&self, pos: usize) -> Option<usize> {
+        if self.query.is_empty() {
+            (pos < self.files.len()).then_some(pos)
+        } else {
+            self.filtered.get(pos).copied()
+        }
+    }
+
     pub fn selected_file(&self) -> Option<FileEntry> {
-        let vis = self.visible();
-        vis.get(self.selected)
-            .and_then(|&i| self.files.get(i))
+        self.visible_index(self.selected)
+            .and_then(|i| self.files.get(i))
             .cloned()
     }
 
     /// Stop at either end; callers only load a diff when the selection changes.
     pub fn move_file(&mut self, delta: isize) -> bool {
-        let n = self.visible().len();
+        let n = self.visible_len();
         if n == 0 {
             return false;
         }
@@ -258,12 +302,28 @@ impl App {
         }
         self.hunk_idx = next;
         self.diff_scroll = self.hunk_scroll_target();
+        // Land on a code row, never on a hunk header/gap row, so keyboard
+        // (`z` via `selected_gap`) and mouse agree.
+        let end = self
+            .display
+            .hunks
+            .get(self.hunk_idx + 1)
+            .copied()
+            .unwrap_or(usize::MAX);
         self.cursor_row = self
             .display
             .code_rows
             .iter()
             .copied()
-            .find(|&row| row >= self.diff_scroll)
+            .find(|&row| row >= self.diff_scroll && row < end)
+            .or_else(|| {
+                self.display
+                    .code_rows
+                    .iter()
+                    .copied()
+                    .find(|&row| row >= self.diff_scroll)
+            })
+            .or_else(|| self.display.code_rows.last().copied())
             .unwrap_or(self.diff_scroll);
     }
 
@@ -279,20 +339,32 @@ impl App {
         {
             return Some(*id);
         }
-        // Hunk's z command uses the selected hunk's leading gap, then the next
-        // available leading gap, finally the file's trailing gap.
-        let start = self
+        // Keyboard `z` mirrors mouse: prefer selected hunk's own range,
+        // then its leading gap. Never leak into later hunks.
+        let start = self.hunks.get(self.hunk_idx).copied().unwrap_or(0);
+        let end = self
+            .hunks
+            .get(self.hunk_idx + 1)
+            .copied()
+            .unwrap_or(self.diff_lines.len());
+        if let Some((i, _)) = self.diff_lines[start..end]
+            .iter()
+            .enumerate()
+            .find(|(_, line)| line.kind == DKind::Gap)
+        {
+            return Some(start + i);
+        }
+        let prev = self
             .hunk_idx
             .checked_sub(1)
             .and_then(|i| self.hunks.get(i))
             .copied()
             .unwrap_or(0);
-        self.diff_lines
+        self.diff_lines[prev..start]
             .iter()
             .enumerate()
-            .skip(start)
-            .find(|(_, line)| line.kind == DKind::Gap)
-            .map(|(i, _)| i)
+            .rfind(|(_, line)| line.kind == DKind::Gap)
+            .map(|(i, _)| prev + i)
     }
 
     pub fn toggle_gap(&mut self, id: usize) {
@@ -349,20 +421,10 @@ impl App {
         }
     }
 
-    /// Scroll target for the current hunk in the active view mode.
+    /// Scroll target for the current hunk, in display rows only.
+    /// Returns 0 when the display cache is empty (after reset, before `prepare`).
     pub fn hunk_scroll_target(&self) -> usize {
-        if let Some(&row) = self.display.hunks.get(self.hunk_idx) {
-            return row;
-        }
-        if self.side_by_side {
-            self.side_cache
-                .1
-                .get(self.hunk_idx)
-                .map(|(s, _)| *s)
-                .unwrap_or(0)
-        } else {
-            self.hunks.get(self.hunk_idx).copied().unwrap_or(0)
-        }
+        self.display.hunks.get(self.hunk_idx).copied().unwrap_or(0)
     }
 
     /// Same source-line projection for both the overview paint and its click targets.
@@ -386,11 +448,10 @@ impl App {
                 .unwrap_or(self.diff_lines.len());
             let mut numbers = self.diff_lines[start..end]
                 .iter()
-                .take_while(|l| l.kind != DKind::Gap)
                 .filter_map(|l| l.new_no.or(l.old_no));
             let first = numbers.next().unwrap_or(1).saturating_sub(1) as usize;
             let final_line = numbers
-                .last()
+                .next_back()
                 .map_or(first, |n| n.saturating_sub(1) as usize);
             let y0 = (first * height / last).min(height - 1);
             let y1 = (final_line * height / last).min(height - 1).max(y0);
@@ -426,6 +487,17 @@ impl App {
         self.anim_scroll.round() as usize
     }
 
+    /// Max scroll for the current display cache at `viewport_h` rows.
+    pub fn max_display_scroll(&self, viewport_h: usize) -> usize {
+        self.display.lines.len().saturating_sub(viewport_h.max(1))
+    }
+
+    /// Rendered scroll clamped to the display cache — same clamp paint uses.
+    pub fn clamped_rendered_scroll(&self, viewport_h: usize) -> usize {
+        self.rendered_scroll()
+            .min(self.max_display_scroll(viewport_h))
+    }
+
     pub fn set_files(&mut self, gen: u64, files: Vec<FileEntry>) {
         if gen != self.gen_files {
             return; // stale
@@ -433,6 +505,7 @@ impl App {
         // Preserve selection by path across refreshes.
         let cur = self.selected_file().map(|f| f.path);
         self.files = files;
+        self.path_lower = self.files.iter().map(|f| f.path.to_lowercase()).collect();
         self.scanning = false;
         self.refresh_filter();
         let vis = self.visible();
@@ -443,21 +516,44 @@ impl App {
         self.last_refresh = Instant::now();
     }
 
+    // 7 args: diff payload + cached rel/kind; kept together so `prepare` does no scans.
+    #[allow(clippy::too_many_arguments)]
     pub fn set_diff(
         &mut self,
         gen: u64,
         title: String,
         lines: Vec<DLine>,
         hunks: Vec<usize>,
-        syntax: Vec<Line<'static>>,
+        syntax: Vec<[Line<'static>; 2]>,
+        rel: String,
+        kind: char,
     ) {
         if gen != self.gen_diff {
             return; // stale — user already moved on
         }
         self.diff_title = title;
+        self.diff_rel = rel;
+        self.diff_kind = kind;
         self.diff_lines = lines;
         self.syntax = syntax;
         self.hunks = hunks;
+        let (adds, dels) = self.diff_lines.iter().fold((0, 0), |(a, d), l| {
+            (
+                a + usize::from(l.kind == DKind::Add),
+                d + usize::from(l.kind == DKind::Del),
+            )
+        });
+        self.diff_adds = adds;
+        self.diff_dels = dels;
+        self.diff_digits = self
+            .diff_lines
+            .iter()
+            .flat_map(|l| [l.old_no, l.new_no])
+            .flatten()
+            .max()
+            .unwrap_or(1)
+            .to_string()
+            .len();
         self.expanded_gaps.clear();
         self.gap_anchor = None;
         self.hunk_idx = 0;

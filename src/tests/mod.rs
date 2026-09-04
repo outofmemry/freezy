@@ -69,8 +69,16 @@ fn fixture() -> App {
             new_no: Some(20),
         },
     ];
-    let syntax = syntax::highlight(&lines, "main.rs");
-    app.set_diff(0, "freezy/src/main.rs".into(), lines, vec![1, 5], syntax);
+    let syntax = syntax::highlight(&lines, "main.rs", None);
+    app.set_diff(
+        0,
+        "freezy/src/main.rs".into(),
+        lines,
+        vec![1, 5],
+        syntax,
+        "src/main.rs".into(),
+        'M',
+    );
     app
 }
 

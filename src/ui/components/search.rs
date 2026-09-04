@@ -13,18 +13,17 @@ use crate::{
 pub fn render_search_popup(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
     let body = modal(frame, area, 74, 20, "Open changed file", CYAN);
     if body.height == 0 {
+        app.layout.search_results = Rect::default();
         return;
     }
     frame.render_widget(
         Paragraph::new(format!(" / {}", app.query)).style(Style::default().fg(CYAN).bg(PANEL_ALT)),
         Rect::new(body.x, body.y, body.width, 1),
     );
-    let results = Rect::new(
-        body.x,
-        body.y + 2.min(body.height),
-        body.width,
-        body.height.saturating_sub(3),
-    );
+    // body.y holds query, bottom-1 holds footer; results get the rest.
+    let top = body.y.saturating_add(2.min(body.height));
+    let height = body.height.saturating_sub(3);
+    let results = Rect::new(body.x, top, body.width, height);
     app.layout.search_results = results;
     let visible = app.visible();
     let start = app
@@ -50,7 +49,8 @@ pub fn render_search_popup(frame: &mut ratatui::Frame, app: &mut App, area: Rect
         })
         .collect();
     frame.render_widget(
-        Paragraph::new(if lines.is_empty() {
+        // Empty only when no matches, not when popup too short to show any.
+        Paragraph::new(if visible.is_empty() {
             vec![Line::styled(
                 " No matching files",
                 Style::default().fg(MUTED),
@@ -60,6 +60,10 @@ pub fn render_search_popup(frame: &mut ratatui::Frame, app: &mut App, area: Rect
         }),
         results,
     );
+    if body.height < 2 {
+        // No room for a footer — don't paint it over the query line.
+        return;
+    }
     frame.render_widget(
         Paragraph::new(format!(
             " {} files  ·  ↑/↓ select  ·  Enter open",
