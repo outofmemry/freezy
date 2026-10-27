@@ -1,3 +1,7 @@
+# This repo is Archieved
+
+- Please use this https://github.com/jnsahaj/lumen
+
 # freezy — terminal Git review, in Rust
 
 A read-only terminal diff viewer for one repository or a directory of sibling
